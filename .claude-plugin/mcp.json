@@ -1,6 +1,6 @@
 {
 	"mcpServers": {
-		"flue-loom": {
+		"flue-loom-mcp-server": {
 			"command": "node",
 			"args": ["${CLAUDE_PLUGIN_ROOT}/mcp/dist/server.mjs"],
 			"env": {

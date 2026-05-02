@@ -1,0 +1,42 @@
+<evaluation>
+   <qa_pair>
+      <question>Connect to the Flue HTTP endpoint at http://localhost:9999/. Among the registered agents, count how many have a scheduled (cron) trigger configured. Return the count as a number.</question>
+      <answer>3</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The Flue endpoint at http://localhost:9999/ has multiple agents with cron schedules. Identify the agent whose cron expression fires once per day at 9:00 AM (the cron string "0 9 * * *"). Return only the exact agent name.</question>
+      <answer>daily-summary</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "add-numbers" at http://localhost:9999/ in synchronous mode with the JSON payload {"a": 17, "b": 25}. The structured response contains the agent's return at the "result" field. Return only the value of result.sum as a number.</question>
+      <answer>42</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "count-words" at http://localhost:9999/ in synchronous mode with the payload {"text": "flue is a framework for building agents"}. Return only the value of result.count as a number.</question>
+      <answer>7</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "version" at http://localhost:9999/ in synchronous mode with no payload. The agent returns metadata about the build. Return only the value of result.commit (a short hexadecimal string) exactly as it appears.</question>
+      <answer>a4b8c2d</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>List all agents registered at http://localhost:9999/. Sort the agent names alphabetically (case-insensitive). Return only the LAST agent name in that sorted list.</question>
+      <answer>version</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "reverse" at http://localhost:9999/ in synchronous mode with the payload {"s": "evaluation"}. Return only the value of result.reversed exactly.</question>
+      <answer>noitaulave</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>List all agents at http://localhost:9999/. Count those whose name starts with the letter "c" (case-insensitive). Return only the count as a number.</question>
+      <answer>2</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "echo" at http://localhost:9999/ in webhook mode (fire-and-forget) with the payload {"x": true}. The structured response from the tool includes the HTTP status code that the Flue endpoint returned. Return only that status code as a number.</question>
+      <answer>202</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Invoke the agent named "constant-pi" at http://localhost:9999/ in synchronous mode. The agent returns a fixed numeric value as a string in result.value. Return that value exactly.</question>
+      <answer>3.14159265358979</answer>
+   </qa_pair>
+</evaluation>

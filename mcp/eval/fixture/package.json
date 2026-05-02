@@ -1,0 +1,19 @@
+{
+	"name": "flue-loom-eval-fixture",
+	"private": true,
+	"type": "module",
+	"description": "Deterministic Flue workspace used by mcp/eval/eval.xml. Agents are pure functions — no LLM calls — so answers are stable.",
+	"scripts": {
+		"dev": "flue dev --target node --port 9999"
+	},
+	"dependencies": {
+		"@flue/sdk": "^0.3.5"
+	},
+	"devDependencies": {
+		"@flue/cli": "^0.3.5",
+		"typescript": "^5.6.0"
+	},
+	"engines": {
+		"node": ">=22"
+	}
+}

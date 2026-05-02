@@ -8,6 +8,10 @@ node_modules/
 *.tsbuildinfo
 mcp/.tsdown/
 
+# Eval fixture build output and lockfile (regenerated on `pnpm install`)
+mcp/eval/fixture/dist/
+mcp/eval/fixture/pnpm-lock.yaml
+
 # Editor
 .vscode/
 .idea/

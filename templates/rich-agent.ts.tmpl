@@ -1,0 +1,42 @@
+import { Type, type FlueContext, type ToolDef } from '@flue/sdk/client';
+import * as v from 'valibot';
+
+export const triggers = { webhook: true };
+
+interface Payload {
+	question: string;
+}
+
+export default async function ({ init, payload }: FlueContext<Payload>) {
+	// Custom tool: pure-string transformation. Demonstrates the Type.Object
+	// schema + execute → string contract without modeling unsafe evaluation.
+	// Replace with whatever real capability your agent needs.
+	const stringReverse: ToolDef = {
+		name: 'string_reverse',
+		description: 'Reverse a string. Returns the reversed text.',
+		parameters: Type.Object({
+			text: Type.String({ description: 'The string to reverse.' }),
+		}),
+		execute: async (args) => {
+			const s = args.text as string;
+			return s.split('').reverse().join('');
+		},
+	};
+
+	const agent = await init({
+		model: 'anthropic/claude-haiku-4-5',
+		sandbox: 'empty',
+	});
+	const session = await agent.session();
+
+	const result = await session.prompt(payload.question, {
+		role: '{{ROLE}}',
+		tools: [stringReverse],
+		result: v.object({
+			answer: v.string(),
+			toolUsed: v.boolean(),
+		}),
+	});
+
+	return result;
+}
