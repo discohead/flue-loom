@@ -86,10 +86,8 @@ export async function postSse(
 	body: unknown,
 	options: PostSseOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
-	// Default 60s timeout protects the *initial fetch* (handshake) only.
-	// Once the response headers arrive we clear the timer — stream
-	// lifetime is the caller's responsibility (flue_stream_agent governs
-	// it via its own timeoutMs / signal).
+	// 60s timer covers the handshake; once headers arrive the caller's
+	// signal owns stream lifetime.
 	const ownCtl = options.signal ? null : new AbortController();
 	const ownTimer = ownCtl
 		? setTimeout(() => ownCtl.abort(), 60_000)

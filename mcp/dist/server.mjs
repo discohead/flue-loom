@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 
 //#region src/http.ts
 var HttpError = class extends Error {
@@ -235,12 +235,7 @@ async function removeEndpoint(name) {
 *   1. Explicit URL (starts with http:// or https://)
 *   2. Registry by name
 *   3. Registry default
-*   4. Built-in fallback (http://localhost:3583)
-*
-* Goes through the mutation chain so it serializes against concurrent
-* add/remove writes — otherwise a list_agents call interleaved with an
-* in-flight add_endpoint can read the pre-write registry and miss the
-* just-added entry.
+*   4. Built-in fallback (http://localhost:3583), only when registry is empty
 */
 async function resolveEndpoint(ref) {
 	if (ref && /^https?:\/\//.test(ref)) return ref.replace(/\/$/, "");
@@ -790,7 +785,7 @@ Errors:
 			text: textBuffer,
 			result: resultPayload,
 			events: finalEvents,
-			...truncated || cappedEarly ? { truncated: true } : {}
+			truncated: truncated || cappedEarly
 		};
 		if (response_format === "markdown") return {
 			content: [{
@@ -868,13 +863,15 @@ Args:
 
 Returns:
   {
-    "endpoints": [{ "name": string, "url": string }],
-    "defaultName"?: string
+    "endpoints": [{ "name": string, "url": string }],   // empty array on cold start
+    "defaultName"?: string                               // omitted when no default is set
   }
 
 Examples:
   - "Which endpoints are configured?"
-  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name`,
+  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name
+
+Errors: none in normal operation. A corrupted registry file logs to stderr and returns an empty list (so subsequent flue_add_endpoint can repair).`,
 		inputSchema: { response_format: ResponseFormat },
 		outputSchema: {
 			endpoints: z.array(EndpointEntry),
@@ -943,10 +940,9 @@ const server = new McpServer({
 	version: SERVER_VERSION
 });
 registerTools(server);
-const transport = new StdioServerTransport();
-await server.connect(transport);
-const registryHome = process.env.FLUE_LOOM_HOME ?? `${homedir()}/.config/flue-loom`;
-console.error(`[${SERVER_NAME}] v${SERVER_VERSION} ready · registry: ${registryHome}/endpoints.json`);
+await server.connect(new StdioServerTransport());
+const registryHome = process.env.FLUE_LOOM_HOME ?? join(homedir(), ".config", "flue-loom");
+console.error(`[${SERVER_NAME}] v${SERVER_VERSION} ready · registry: ${join(registryHome, "endpoints.json")}`);
 
 //#endregion
 export {  };

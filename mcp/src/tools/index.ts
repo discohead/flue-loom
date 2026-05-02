@@ -239,9 +239,8 @@ Errors:
 
 			try {
 				if (m === 'webhook') {
-					// Add a 60s timeout so a hung endpoint can't block the tool
-					// indefinitely, and reject non-2xx so the LLM doesn't see
-					// "{status: 404}" as a successful fire-and-forget invocation.
+					// 60s bound on the dispatch; reject non-2xx so the LLM doesn't see
+					// a failed dispatch as a successful fire-and-forget.
 					const ctl = new AbortController();
 					const timer = setTimeout(() => ctl.abort(), 60_000);
 					let res: Response;
@@ -285,9 +284,10 @@ Errors:
 				}
 
 				const data = await httpJson(path, { method: 'POST', body: payload ?? {} });
-				// Flue's sync HTTP envelope is { result: <agent return> }. Unwrap so
-				// callers can address agent fields directly (e.g. result.sum instead
-				// of result.result.sum) and so structuredContent matches stream mode.
+				// Unwrap Flue's `{ result }` envelope so callers see agent fields
+				// directly. Convention: any object body with a `result` key is the
+				// envelope; an agent that legitimately returns `{ result, other }`
+				// will lose `other` here. Document loudly if that ever surfaces.
 				const unwrapped =
 					data && typeof data === 'object' && data !== null && 'result' in data
 						? (data as { result: unknown }).result
@@ -443,9 +443,7 @@ Errors:
 					} catch {
 						/* keep as raw string */
 					}
-					// Cap the events log at MAX_EVENTS as defense-in-depth against
-					// runaway / pathological streams. Text + result accumulation
-					// continue regardless so the agent's output is never lost.
+					// Cap the events log; text and result still accumulate past it.
 					if (events.length < MAX_EVENTS) {
 						events.push({ event: ev.event, data: parsed });
 					} else if (!cappedEarly) {
@@ -468,10 +466,8 @@ Errors:
 						}
 					}
 					if (ev.event === 'result') {
-						// Flue's HTTP layer synthesizes the result event with shape
-						// { type: 'result', data: <agent return> } (see
-						// packages/sdk/src/build-plugin-node.ts:222-226). Unwrap to
-						// data so 'result' matches sync invoke semantics.
+						// Flue wraps as { type: 'result', data: <agent return> }; unwrap
+						// to match sync semantics (see build-plugin-node.ts:222-226).
 						resultPayload =
 							parsed && typeof parsed === 'object' && parsed !== null && 'data' in parsed
 								? (parsed as { data: unknown }).data
@@ -558,7 +554,7 @@ Errors:
 				text: textBuffer,
 				result: resultPayload,
 				events: finalEvents,
-				...(truncated || cappedEarly ? { truncated: true } : {}),
+				truncated: truncated || cappedEarly,
 			};
 
 			if (response_format === 'markdown') {
@@ -658,13 +654,15 @@ Args:
 
 Returns:
   {
-    "endpoints": [{ "name": string, "url": string }],
-    "defaultName"?: string
+    "endpoints": [{ "name": string, "url": string }],   // empty array on cold start
+    "defaultName"?: string                               // omitted when no default is set
   }
 
 Examples:
   - "Which endpoints are configured?"
-  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name`,
+  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name
+
+Errors: none in normal operation. A corrupted registry file logs to stderr and returns an empty list (so subsequent flue_add_endpoint can repair).`,
 			inputSchema: {
 				response_format: ResponseFormat,
 			},

@@ -74,6 +74,7 @@ export async function addEndpoint(name: string, url: string, makeDefault?: boole
 			state.endpoints.push({ name, url });
 		}
 		if (makeDefault) state.defaultName = name;
+		// Auto-promote on first registration so the cold-start case has a default.
 		if (!state.defaultName && state.endpoints.length === 1) state.defaultName = name;
 		await writeRegistry(state);
 		return state;
@@ -102,14 +103,11 @@ export async function removeEndpoint(name: string): Promise<RegistryState> {
  *   1. Explicit URL (starts with http:// or https://)
  *   2. Registry by name
  *   3. Registry default
- *   4. Built-in fallback (http://localhost:3583)
- *
- * Goes through the mutation chain so it serializes against concurrent
- * add/remove writes — otherwise a list_agents call interleaved with an
- * in-flight add_endpoint can read the pre-write registry and miss the
- * just-added entry.
+ *   4. Built-in fallback (http://localhost:3583), only when registry is empty
  */
 export async function resolveEndpoint(ref?: string): Promise<string> {
+	// Goes through the mutation chain so a concurrent add/remove can't be
+	// read partially.
 	if (ref && /^https?:\/\//.test(ref)) return ref.replace(/\/$/, '');
 
 	return withMutation(async () => {
