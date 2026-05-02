@@ -132,7 +132,7 @@ Errors:
 			try {
 				url = await resolveEndpoint(endpoint);
 			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 			}
 			try {
 				const data = await httpJson<{ agents?: unknown }>(`${url}/agents`);
@@ -184,9 +184,9 @@ Examples:
   - "Continue thread-1's conversation with hello" → agent="hello", sessionId="thread-1"
 
 Errors:
-  - 404 → agent not found; try flue_list_agents to see available names
-  - 403 → trigger-less agent in production mode; the endpoint must be running with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically)
-  - Network timeout (60s) → consider flue_stream_agent for long-running agents`,
+  - 404 with envelope type \`agent_not_webhook\` → trigger-less agent in production mode; the endpoint must run with FLUE_MODE=local (\`flue dev\` / \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`. flue_invoke_agent surfaces this hint automatically via mapFlueError.
+  - 404 with envelope type \`agent_not_found\` → agent name is wrong; try flue_list_agents.
+  - Network timeout (default 60s, currently not user-configurable) → consider flue_stream_agent for long-running agents.`,
 			inputSchema: {
 				endpoint: z
 					.string()
@@ -231,7 +231,7 @@ Errors:
 			try {
 				url = await resolveEndpoint(endpoint);
 			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 			}
 			const sid = sessionId ?? 'default';
 			const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
@@ -335,30 +335,34 @@ Returns:
     "endpoint": string,
     "agent": string,
     "sessionId": string,
-    "text": string,                  // Concatenated 'text' event payloads
-    "result": <unknown>,              // Final 'result' event payload
+    "text": string,                  // Concatenated 'text_delta' event payloads (the LLM's streaming text)
+    "result": <unknown>,              // Unwrapped 'result' event payload (the agent's return value)
     "events": [                       // Full event log for replay/inspection
       { "event": string, "data": <unknown> }
     ],
-    "truncated"?: boolean            // True if events were dropped to fit
+    "truncated"?: boolean            // True if MAX_EVENTS cap or CHARACTER_LIMIT halving fired
   }
 
-Event types in 'events':
-  - 'start': agent began
-  - 'text': streaming LLM text chunk
-  - 'tool_use': agent called a tool
-  - 'idle': agent paused (tool result expected)
-  - 'result': final return value
-  - 'error': failure
+Event types in 'events' (Flue SDK FlueEvent + HTTP-layer synthesized events):
+  - 'agent_start': agent handler entered
+  - 'text_delta': streaming LLM text chunk (data.text accumulates into the 'text' field above)
+  - 'tool_start' / 'tool_end': agent called a tool (with toolName, args, isError, result)
+  - 'turn_end': a single LLM turn finished
+  - 'command_start' / 'command_end': session.shell() or scoped command ran
+  - 'task_start' / 'task_end': session.task() spawned a child session
+  - 'compaction_start' / 'compaction_end': message-history compaction fired
+  - 'idle': agent paused (HTTP layer synthesizes one if the handler returns without idling)
+  - 'result': handler's return value (HTTP-layer synthesized; the agent's return is unwrapped from data.data into the 'result' field above)
+  - 'error': agent threw — surfaced as isError with the Flue envelope (HTTP-layer synthesized)
 
 Examples:
   - "Run hello with streaming" → agent="hello"
-  - "Watch tool calls during a turn" → look at events[] for event === 'tool_use'
-  - Long-running agents that exceed the 60s sync timeout
+  - "Watch tool calls during a turn" → look at events[] for event === 'tool_start' / 'tool_end'
 
 Errors:
-  - HTTP failures map to actionable Flue messages (404 → flue_list_agents hint, 403 → FLUE_MODE hint, etc.)
-  - Stalled stream → aborted at timeoutMs with a clear message`,
+  - HTTP non-2xx maps to actionable Flue messages via mapFlueError (404 + envelope type 'agent_not_webhook' → trigger-less hint, 'agent_not_found' → name hint).
+  - Mid-stream 'error' events (agent threw during execution) surface as isError with the Flue envelope details and any partial text/result captured so far.
+  - Stalled stream → aborted at timeoutMs with a clear message.`,
 			inputSchema: {
 				endpoint: z
 					.string()
@@ -407,7 +411,7 @@ Errors:
 			try {
 				url = await resolveEndpoint(endpoint);
 			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 			}
 			const sid = sessionId ?? 'default';
 			const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
@@ -419,6 +423,9 @@ Errors:
 			const events: Array<{ event: string; data: unknown }> = [];
 			let textBuffer = '';
 			let resultPayload: unknown = undefined;
+			let streamErrorEnvelope:
+				| { type?: unknown; message?: unknown; details?: unknown }
+				| null = null;
 			let totalEventsSeen = 0;
 			let cappedEarly = false;
 
@@ -431,7 +438,7 @@ Errors:
 					try {
 						parsed = JSON.parse(ev.data);
 					} catch {
-						/* keep as string */
+						/* keep as raw string */
 					}
 					// Cap the events log at MAX_EVENTS as defense-in-depth against
 					// runaway / pathological streams. Text + result accumulation
@@ -446,22 +453,39 @@ Errors:
 						cappedEarly = true;
 					}
 
-					if (
-						ev.event === 'text' &&
-						parsed &&
-						typeof parsed === 'object' &&
-						'text' in parsed
-					) {
-						textBuffer += String((parsed as { text: unknown }).text ?? '');
+					// Flue emits FlueEvent.type as the SSE event name. Streaming
+					// LLM text comes through as 'text_delta' with a `text` payload
+					// (see packages/sdk/src/types.ts:397).
+					if (ev.event === 'text_delta') {
+						if (parsed && typeof parsed === 'object' && 'text' in parsed) {
+							textBuffer += String((parsed as { text: unknown }).text ?? '');
+						} else if (typeof ev.data === 'string') {
+							// Some servers may send raw text without the JSON wrapper.
+							textBuffer += ev.data;
+						}
 					}
 					if (ev.event === 'result') {
-						// Flue's SSE 'result' event wraps the agent return in
-						// { type: 'result', data: <agent return> }. Unwrap so the
-						// 'result' field on structuredContent matches sync semantics.
+						// Flue's HTTP layer synthesizes the result event with shape
+						// { type: 'result', data: <agent return> } (see
+						// packages/sdk/src/build-plugin-node.ts:222-226). Unwrap to
+						// data so 'result' matches sync invoke semantics.
 						resultPayload =
 							parsed && typeof parsed === 'object' && parsed !== null && 'data' in parsed
 								? (parsed as { data: unknown }).data
 								: parsed;
+					}
+					if (ev.event === 'error') {
+						// HTTP layer emits 'error' when the agent throws mid-stream
+						// (build-plugin-node.ts:227-232). Payload is the Flue error
+						// envelope. Capture and surface as isError after the loop —
+						// preserve any partial text/result the LLM already produced.
+						if (parsed && typeof parsed === 'object') {
+							streamErrorEnvelope = parsed as {
+								type?: unknown;
+								message?: unknown;
+								details?: unknown;
+							};
+						}
 					}
 				}
 			} catch (err) {
@@ -478,6 +502,26 @@ Errors:
 				);
 			} finally {
 				clearTimeout(timer);
+			}
+
+			// Mid-stream agent failure: surface as isError with whatever partial
+			// text/result we captured before the error event.
+			if (streamErrorEnvelope) {
+				const type = String(streamErrorEnvelope.type ?? 'unknown');
+				const message = String(streamErrorEnvelope.message ?? 'Agent error during stream');
+				return errorText(
+					`Flue stream error [${type}]: ${message} (agent "${agent}", session "${sid}", endpoint ${url})`,
+					{
+						endpoint: url,
+						agent,
+						sessionId: sid,
+						errorType: type,
+						errorMessage: message,
+						partialText: textBuffer,
+						partialResult: resultPayload,
+						eventsSeen: totalEventsSeen,
+					},
+				);
 			}
 
 			// Truncate the events log if the JSON envelope would blow the character limit.

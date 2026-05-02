@@ -84,30 +84,42 @@ export function mapFlueError(
 			? `agent "${context.agent}" (session "${context.sessionId ?? 'default'}") at ${context.endpoint}`
 			: context.endpoint;
 
-		// Try to unwrap the structured error envelope from @flue/sdk PR #18:
-		//   { error: { code: string, message: string, ... } }
+		// Try to unwrap @flue/sdk's structured error envelope (error-utils.ts):
+		//   { error: { type: string, message: string, details: string, ... } }
 		if (
 			typeof error.body === 'object' &&
 			error.body !== null &&
 			'error' in error.body &&
 			typeof (error.body as { error: unknown }).error === 'object'
 		) {
-			const inner = (error.body as { error: { code?: unknown; message?: unknown } }).error;
-			const code = String(inner.code ?? 'unknown');
+			const inner = (error.body as {
+				error: { type?: unknown; message?: unknown; details?: unknown };
+			}).error;
+			const type = String(inner.type ?? 'unknown');
 			const message = String(inner.message ?? 'no message');
-			return `Flue error [${code}]: ${message} (HTTP ${error.status} from ${where})`;
+			// Augment trigger-less guidance when Flue tags the error as agent_not_webhook —
+			// otherwise the user sees a bare 404 + "Agent X is not web-accessible".
+			if (type === 'agent_not_webhook') {
+				return (
+					`Flue error [agent_not_webhook]: ${message} (HTTP ${error.status} from ${where}). ` +
+					`The agent has no \`triggers = { webhook: true }\` export, so it's only invokable when the endpoint runs with FLUE_MODE=local ` +
+					`(\`flue dev\` and \`flue run\` set this automatically). Add a webhook trigger to expose it in production.`
+				);
+			}
+			return `Flue error [${type}]: ${message} (HTTP ${error.status} from ${where})`;
 		}
 
+		// Fallback when the body isn't a Flue envelope (e.g. plain proxy errors,
+		// non-Flue endpoints). Flue itself returns 404 — not 401/403 — for the
+		// trigger-less / not-found cases, so don't put trigger-less hints here.
 		switch (error.status) {
 			case 404:
 				return context.agent
-					? `Agent "${context.agent}" not found at ${context.endpoint}. Try flue_list_agents to see available agents.`
+					? `Agent "${context.agent}" not found at ${context.endpoint} (HTTP 404). Try flue_list_agents to see available agents, or — if you authored the agent — verify it exports \`triggers = { webhook: true }\` and the endpoint isn't filtering trigger-less agents (FLUE_MODE).`
 					: `Endpoint not found: ${context.endpoint}. Verify the URL is correct and the server is running.`;
 			case 401:
 			case 403:
-				return `Endpoint rejected the call (HTTP ${error.status}) for ${where}. ` +
-					`Common cause: trigger-less agent in production mode. The endpoint must run with FLUE_MODE=local ` +
-					`(\`flue dev\` and \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`.`;
+				return `Endpoint rejected the call (HTTP ${error.status}) for ${where}. The endpoint may require authentication credentials.`;
 			case 408:
 			case 504:
 				return `Timed out talking to ${where}. Consider flue_stream_agent for long-running agents.`;

@@ -58,12 +58,15 @@ function mapFlueError(error, context) {
 		const where = context.agent ? `agent "${context.agent}" (session "${context.sessionId ?? "default"}") at ${context.endpoint}` : context.endpoint;
 		if (typeof error.body === "object" && error.body !== null && "error" in error.body && typeof error.body.error === "object") {
 			const inner = error.body.error;
-			return `Flue error [${String(inner.code ?? "unknown")}]: ${String(inner.message ?? "no message")} (HTTP ${error.status} from ${where})`;
+			const type = String(inner.type ?? "unknown");
+			const message = String(inner.message ?? "no message");
+			if (type === "agent_not_webhook") return `Flue error [agent_not_webhook]: ${message} (HTTP ${error.status} from ${where}). The agent has no \`triggers = { webhook: true }\` export, so it's only invokable when the endpoint runs with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically). Add a webhook trigger to expose it in production.`;
+			return `Flue error [${type}]: ${message} (HTTP ${error.status} from ${where})`;
 		}
 		switch (error.status) {
-			case 404: return context.agent ? `Agent "${context.agent}" not found at ${context.endpoint}. Try flue_list_agents to see available agents.` : `Endpoint not found: ${context.endpoint}. Verify the URL is correct and the server is running.`;
+			case 404: return context.agent ? `Agent "${context.agent}" not found at ${context.endpoint} (HTTP 404). Try flue_list_agents to see available agents, or — if you authored the agent — verify it exports \`triggers = { webhook: true }\` and the endpoint isn't filtering trigger-less agents (FLUE_MODE).` : `Endpoint not found: ${context.endpoint}. Verify the URL is correct and the server is running.`;
 			case 401:
-			case 403: return `Endpoint rejected the call (HTTP ${error.status}) for ${where}. Common cause: trigger-less agent in production mode. The endpoint must run with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`.`;
+			case 403: return `Endpoint rejected the call (HTTP ${error.status}) for ${where}. The endpoint may require authentication credentials.`;
 			case 408:
 			case 504: return `Timed out talking to ${where}. Consider flue_stream_agent for long-running agents.`;
 			case 429: return `Rate limited by ${context.endpoint}. Wait and retry.`;
@@ -415,7 +418,7 @@ Errors:
 		try {
 			url = await resolveEndpoint(endpoint);
 		} catch (err) {
-			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 		}
 		try {
 			const data = await httpJson(`${url}/agents`);
@@ -467,9 +470,9 @@ Examples:
   - "Continue thread-1's conversation with hello" → agent="hello", sessionId="thread-1"
 
 Errors:
-  - 404 → agent not found; try flue_list_agents to see available names
-  - 403 → trigger-less agent in production mode; the endpoint must be running with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically)
-  - Network timeout (60s) → consider flue_stream_agent for long-running agents`,
+  - 404 with envelope type \`agent_not_webhook\` → trigger-less agent in production mode; the endpoint must run with FLUE_MODE=local (\`flue dev\` / \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`. flue_invoke_agent surfaces this hint automatically via mapFlueError.
+  - 404 with envelope type \`agent_not_found\` → agent name is wrong; try flue_list_agents.
+  - Network timeout (default 60s, currently not user-configurable) → consider flue_stream_agent for long-running agents.`,
 		inputSchema: {
 			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
 			agent: z.string().describe("Agent name (matches the file at .flue/agents/<name>.{ts,js,mts,mjs})."),
@@ -497,7 +500,7 @@ Errors:
 		try {
 			url = await resolveEndpoint(endpoint);
 		} catch (err) {
-			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 		}
 		const sid = sessionId ?? "default";
 		const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
@@ -597,30 +600,34 @@ Returns:
     "endpoint": string,
     "agent": string,
     "sessionId": string,
-    "text": string,                  // Concatenated 'text' event payloads
-    "result": <unknown>,              // Final 'result' event payload
+    "text": string,                  // Concatenated 'text_delta' event payloads (the LLM's streaming text)
+    "result": <unknown>,              // Unwrapped 'result' event payload (the agent's return value)
     "events": [                       // Full event log for replay/inspection
       { "event": string, "data": <unknown> }
     ],
-    "truncated"?: boolean            // True if events were dropped to fit
+    "truncated"?: boolean            // True if MAX_EVENTS cap or CHARACTER_LIMIT halving fired
   }
 
-Event types in 'events':
-  - 'start': agent began
-  - 'text': streaming LLM text chunk
-  - 'tool_use': agent called a tool
-  - 'idle': agent paused (tool result expected)
-  - 'result': final return value
-  - 'error': failure
+Event types in 'events' (Flue SDK FlueEvent + HTTP-layer synthesized events):
+  - 'agent_start': agent handler entered
+  - 'text_delta': streaming LLM text chunk (data.text accumulates into the 'text' field above)
+  - 'tool_start' / 'tool_end': agent called a tool (with toolName, args, isError, result)
+  - 'turn_end': a single LLM turn finished
+  - 'command_start' / 'command_end': session.shell() or scoped command ran
+  - 'task_start' / 'task_end': session.task() spawned a child session
+  - 'compaction_start' / 'compaction_end': message-history compaction fired
+  - 'idle': agent paused (HTTP layer synthesizes one if the handler returns without idling)
+  - 'result': handler's return value (HTTP-layer synthesized; the agent's return is unwrapped from data.data into the 'result' field above)
+  - 'error': agent threw — surfaced as isError with the Flue envelope (HTTP-layer synthesized)
 
 Examples:
   - "Run hello with streaming" → agent="hello"
-  - "Watch tool calls during a turn" → look at events[] for event === 'tool_use'
-  - Long-running agents that exceed the 60s sync timeout
+  - "Watch tool calls during a turn" → look at events[] for event === 'tool_start' / 'tool_end'
 
 Errors:
-  - HTTP failures map to actionable Flue messages (404 → flue_list_agents hint, 403 → FLUE_MODE hint, etc.)
-  - Stalled stream → aborted at timeoutMs with a clear message`,
+  - HTTP non-2xx maps to actionable Flue messages via mapFlueError (404 + envelope type 'agent_not_webhook' → trigger-less hint, 'agent_not_found' → name hint).
+  - Mid-stream 'error' events (agent threw during execution) surface as isError with the Flue envelope details and any partial text/result captured so far.
+  - Stalled stream → aborted at timeoutMs with a clear message.`,
 		inputSchema: {
 			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
 			agent: z.string().describe("Agent name."),
@@ -652,7 +659,7 @@ Errors:
 		try {
 			url = await resolveEndpoint(endpoint);
 		} catch (err) {
-			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
 		}
 		const sid = sessionId ?? "default";
 		const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
@@ -662,6 +669,7 @@ Errors:
 		const events = [];
 		let textBuffer = "";
 		let resultPayload = void 0;
+		let streamErrorEnvelope = null;
 		let totalEventsSeen = 0;
 		let cappedEarly = false;
 		try {
@@ -686,8 +694,14 @@ Errors:
 					});
 					cappedEarly = true;
 				}
-				if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
+				if (ev.event === "text_delta") {
+					if (parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
+					else if (typeof ev.data === "string") textBuffer += ev.data;
+				}
 				if (ev.event === "result") resultPayload = parsed && typeof parsed === "object" && parsed !== null && "data" in parsed ? parsed.data : parsed;
+				if (ev.event === "error") {
+					if (parsed && typeof parsed === "object") streamErrorEnvelope = parsed;
+				}
 			}
 		} catch (err) {
 			if (err instanceof Error && err.name === "AbortError") return errorText(`Stream timed out after ${ms}ms talking to agent "${agent}" (session "${sid}") at ${url}. Increase timeoutMs or check why the agent stalled (try flue_invoke_agent in sync mode for a fresh attempt).`, {
@@ -709,6 +723,20 @@ Errors:
 			});
 		} finally {
 			clearTimeout(timer);
+		}
+		if (streamErrorEnvelope) {
+			const type = String(streamErrorEnvelope.type ?? "unknown");
+			const message = String(streamErrorEnvelope.message ?? "Agent error during stream");
+			return errorText(`Flue stream error [${type}]: ${message} (agent "${agent}", session "${sid}", endpoint ${url})`, {
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				errorType: type,
+				errorMessage: message,
+				partialText: textBuffer,
+				partialResult: resultPayload,
+				eventsSeen: totalEventsSeen
+			});
 		}
 		let finalEvents = events;
 		let truncated = false;
