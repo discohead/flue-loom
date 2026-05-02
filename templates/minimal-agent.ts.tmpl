@@ -1,0 +1,11 @@
+import type { FlueContext } from '@flue/sdk/client';
+
+export const triggers = { webhook: true };
+
+export default async function ({ init, payload }: FlueContext) {
+	const agent = await init({ model: 'anthropic/claude-haiku-4-5' });
+	const session = await agent.session();
+
+	const result = await session.prompt('{{PROMPT}}');
+	return { text: result.text };
+}
