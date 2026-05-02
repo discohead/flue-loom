@@ -38,7 +38,7 @@ The `--url` argument lets you talk to:
 - Deployed Cloudflare worker: `https://my-agents.example.workers.dev`
 - Remote dev server: any reachable URL
 
-If the user has the MCP server registered (Claude Desktop, etc.), they can use the `flue-loom` MCP server's `add_endpoint` tool to register URLs by name. Slash commands here use raw URLs; the MCP server uses named endpoints.
+If the user has the MCP server registered (Claude Desktop, etc.), they can use the `flue-loom-mcp-server`'s `flue_add_endpoint` tool to register URLs by name. Slash commands here use raw URLs; the MCP server uses named endpoints.
 
 ## Payload customization
 

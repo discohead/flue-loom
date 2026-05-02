@@ -11,7 +11,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerTools } from './tools/index.ts';
 
 const server = new McpServer({
-	name: 'flue-loom',
+	name: 'flue-loom-mcp-server',
 	version: '0.1.0',
 });
 

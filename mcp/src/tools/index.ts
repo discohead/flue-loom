@@ -33,15 +33,45 @@ const RegistryShape = z.object({
 
 export function registerTools(server: McpServer): void {
 	server.registerTool(
-		'list_agents',
+		'flue_list_agents',
 		{
-			title: 'List Agents',
-			description: 'List all agents at a Flue HTTP endpoint (manifest from GET /agents).',
+			title: 'List Flue Agents',
+			description: `List all Flue agents registered at a Flue HTTP endpoint.
+
+Calls GET /agents on the endpoint (local \`flue dev\` or a deployed Cloudflare Worker URL) and returns the manifest — every agent discovered, with its parsed triggers. Use before flue_invoke_agent or flue_stream_agent to discover what's invokable.
+
+Args:
+  - endpoint (string, optional): Endpoint URL or registered endpoint name. Resolution order: explicit URL → name in registry → registry default → http://localhost:3583. Use flue_list_endpoints to see registered names.
+
+Returns:
+  {
+    "endpoint": string,         // The resolved URL
+    "agents": [
+      {
+        "name": string,         // Agent name (filename minus extension)
+        "triggers": {           // Parsed at build time from agent source
+          "webhook"?: true,
+          "cron"?: string
+        }
+      }
+    ]
+  }
+
+Examples:
+  - "What agents are running?" → flue_list_agents (no args)
+  - "List agents on prod" → flue_list_agents endpoint="prod-cf"
+  - "What's at https://example.workers.dev?" → flue_list_agents endpoint="https://example.workers.dev"
+
+Errors:
+  - "Endpoint '<name>' not found in registry" → register it first with flue_add_endpoint
+  - HTTP 404 / connection refused → endpoint is down or URL is wrong; verify with curl`,
 			inputSchema: {
 				endpoint: z
 					.string()
 					.optional()
-					.describe('Endpoint URL or registered endpoint name. Falls back to default.'),
+					.describe(
+						'Endpoint URL (http://… or https://…) or registered endpoint name. Falls back to registry default, then http://localhost:3583.',
+					),
 			},
 			outputSchema: {
 				endpoint: z.string(),
@@ -67,11 +97,40 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'invoke_agent',
+		'flue_invoke_agent',
 		{
-			title: 'Invoke Agent',
-			description:
-				'Invoke a Flue agent in sync mode (default) or as a webhook (fire-and-forget). Returns the result envelope.',
+			title: 'Invoke Flue Agent',
+			description: `Invoke a Flue agent and return its result.
+
+POSTs to /agents/:name/:id on the Flue HTTP endpoint. Two modes:
+  - sync (default): waits for the agent to finish, returns the result body
+  - webhook: fire-and-forget, returns HTTP 202 immediately
+
+The session id is the conversation thread — the same id reuses message history; a new id starts fresh. Defaults to "default".
+
+Args:
+  - endpoint (string, optional): Endpoint URL or registered name.
+  - agent (string, required): Agent name (matches .flue/agents/<name>.{ts,js,mts,mjs}).
+  - sessionId (string, optional): Session id. Default: "default".
+  - payload (any, optional): JSON-serializable value passed to the agent handler as ctx.payload.
+  - mode ('sync' | 'webhook', optional): Default: 'sync'.
+
+Returns (sync):
+  { "endpoint": string, "agent": string, "sessionId": string, "mode": "sync", "result": <agent return value> }
+
+Returns (webhook):
+  { "endpoint": string, "agent": string, "sessionId": string, "mode": "webhook", "status": 202 }
+
+Examples:
+  - "Run the hello agent" → agent="hello"
+  - "Invoke greeter with payload" → agent="greeter", payload={"name":"Ada"}
+  - "Fire off scheduler async" → agent="scheduler", mode="webhook"
+  - "Continue thread-1's conversation with hello" → agent="hello", sessionId="thread-1"
+
+Errors:
+  - 404 → agent not found; try flue_list_agents to see available names
+  - 403 → trigger-less agent in production mode; the endpoint must be running with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically)
+  - Network timeout (60s) → consider flue_stream_agent for long-running agents`,
 			inputSchema: {
 				endpoint: z
 					.string()
@@ -83,7 +142,7 @@ export function registerTools(server: McpServer): void {
 				sessionId: z
 					.string()
 					.optional()
-					.describe('Session id; defaults to "default".'),
+					.describe('Session id; defaults to "default". Reuse to continue a conversation thread.'),
 				payload: z
 					.unknown()
 					.optional()
@@ -151,11 +210,48 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'stream_agent',
+		'flue_stream_agent',
 		{
-			title: 'Stream Agent',
-			description:
-				'Invoke a Flue agent and stream events via SSE. Returns the accumulated text, structured result, and full event log.',
+			title: 'Stream Flue Agent',
+			description: `Invoke a Flue agent with SSE streaming and return the accumulated output.
+
+Like flue_invoke_agent in sync mode, but uses Server-Sent Events to stream the agent's progress. Useful for long-running agents (multi-turn LLM work) where you want to see text incrementally and inspect tool calls. Returns the final assembled state once the stream completes.
+
+Args:
+  - endpoint (string, optional): Same as flue_invoke_agent.
+  - agent (string, required): Agent name.
+  - sessionId (string, optional): Session id. Default: "default".
+  - payload (any, optional): Agent payload.
+
+Returns:
+  {
+    "endpoint": string,
+    "agent": string,
+    "sessionId": string,
+    "text": string,                  // Concatenated 'text' event payloads
+    "result": <unknown>,              // Final 'result' event payload
+    "events": [                       // Full event log for replay/inspection
+      { "event": string, "data": <unknown> }
+    ]
+  }
+
+Event types in 'events':
+  - 'start': agent began
+  - 'text': streaming LLM text chunk
+  - 'tool_use': agent called a tool
+  - 'idle': agent paused (tool result expected)
+  - 'result': final return value
+  - 'error': failure
+
+Examples:
+  - "Run hello with streaming" → agent="hello"
+  - "Watch tool calls during a turn" → events[] where event === 'tool_use'
+  - Long-running agents that exceed the sync 60s timeout
+
+Errors:
+  - HTTP failures: same status codes as flue_invoke_agent
+  - Connection drops mid-stream: 'events' contains everything received so far
+  - No client-side timeout currently (added in v0.2)`,
 			inputSchema: {
 				endpoint: z
 					.string()
@@ -240,11 +336,19 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'get_manifest',
+		'flue_get_manifest',
 		{
-			title: 'Get Manifest',
-			description:
-				'Fetch the agent manifest from a Flue endpoint. Currently equivalent to list_agents; kept distinct for future fields.',
+			title: 'Get Flue Manifest',
+			description: `Fetch the agent manifest from a Flue endpoint.
+
+Currently equivalent to flue_list_agents — both call GET /agents and return the same shape. Kept as a separate tool for forward compatibility (a future Flue version may differentiate manifest metadata from runtime registry).
+
+Args:
+  - endpoint (string, optional): Endpoint URL or registered endpoint name.
+
+Returns: same shape as flue_list_agents.
+
+Note: this tool may be removed in a future version. Prefer flue_list_agents.`,
 			inputSchema: {
 				endpoint: z
 					.string()
@@ -275,10 +379,27 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'add_endpoint',
+		'flue_add_endpoint',
 		{
-			title: 'Add Endpoint',
-			description: 'Register a Flue endpoint by name. Persisted to $FLUE_LOOM_HOME/endpoints.json.',
+			title: 'Add Flue Endpoint',
+			description: `Register a Flue endpoint by name for later reuse.
+
+Persists to \$FLUE_LOOM_HOME/endpoints.json (default: ~/.config/flue-loom/endpoints.json). Once registered, refer to the endpoint by name in other tools instead of the full URL.
+
+Args:
+  - name (string, required): Short name, e.g. "local", "prod-cf", "staging".
+  - url (string, required): Full URL to the Flue HTTP endpoint. Trailing slashes are stripped.
+  - default (boolean, optional): If true, set as the default endpoint. The first registered endpoint becomes default automatically.
+
+Returns:
+  { "ok": true, "registry": { "endpoints": [...], "defaultName"?: string } }
+
+Examples:
+  - "Save localhost as 'local' default" → name="local", url="http://localhost:3583", default=true
+  - "Register the prod worker" → name="prod-cf", url="https://my-agents.example.workers.dev"
+
+Errors:
+  - URL validation: malformed URLs are accepted as strings in v0.1; v0.2 adds new URL() validation.`,
 			inputSchema: {
 				name: z
 					.string()
@@ -313,10 +434,24 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'list_endpoints',
+		'flue_list_endpoints',
 		{
-			title: 'List Endpoints',
-			description: 'List all registered Flue endpoints and the current default.',
+			title: 'List Flue Endpoints',
+			description: `List all registered Flue endpoints and the current default.
+
+Reads \$FLUE_LOOM_HOME/endpoints.json. Use to see which endpoints are configured before referencing one by name in flue_invoke_agent / flue_list_agents.
+
+Args: (none)
+
+Returns:
+  {
+    "endpoints": [{ "name": string, "url": string }],
+    "defaultName"?: string
+  }
+
+Examples:
+  - "Which endpoints are configured?"
+  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name`,
 			inputSchema: {},
 			outputSchema: {
 				endpoints: z.array(EndpointEntry),
@@ -343,10 +478,21 @@ export function registerTools(server: McpServer): void {
 	);
 
 	server.registerTool(
-		'remove_endpoint',
+		'flue_remove_endpoint',
 		{
-			title: 'Remove Endpoint',
-			description: 'Remove a registered endpoint by name.',
+			title: 'Remove Flue Endpoint',
+			description: `Remove a registered Flue endpoint by name.
+
+If the removed endpoint was the default, the default switches to the first remaining endpoint (or undefined if none remain). Removing a non-existent name is a no-op — the registry is returned unchanged.
+
+Args:
+  - name (string, required): Name of the endpoint to remove.
+
+Returns:
+  { "ok": true, "registry": { "endpoints": [...], "defaultName"?: string } }
+
+Examples:
+  - "Forget the staging endpoint" → name="staging"`,
 			inputSchema: {
 				name: z.string().describe('Name of the endpoint to remove.'),
 			},

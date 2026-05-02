@@ -14,7 +14,7 @@ Flue is "Claude Code as an SDK" — a framework for building Claude-Code-like ag
 
 **Operating** (any MCP host — Claude Code, Claude Desktop, ChatGPT desktop, Cursor, …)
 - Bundled MCP server (`@flue-loom/mcp`) that speaks to any Flue HTTP endpoint
-- `list_agents`, `invoke_agent`, `stream_agent`, endpoint registry
+- `flue_list_agents`, `flue_invoke_agent`, `flue_stream_agent`, endpoint registry
 - Works against `flue dev` locally or a deployed Cloudflare Worker URL
 
 The two faces are deliberately split: inside Claude Code, slash commands compose `flue` + `curl` + `Monitor` + `run_in_background` directly because the unix toolbelt is more flexible than typed MCP tools. Outside Claude Code, MCP is the only portable interface.
