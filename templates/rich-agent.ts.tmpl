@@ -8,16 +8,18 @@ interface Payload {
 }
 
 export default async function ({ init, payload }: FlueContext<Payload>) {
-	// Custom tool: simple arithmetic for demonstration.
-	const calculator: ToolDef = {
-		name: 'calculator',
-		description: 'Perform arithmetic. Returns the numeric result as a string.',
+	// Custom tool: pure-string transformation. Demonstrates the Type.Object
+	// schema + execute → string contract without modeling unsafe evaluation.
+	// Replace with whatever real capability your agent needs.
+	const stringReverse: ToolDef = {
+		name: 'string_reverse',
+		description: 'Reverse a string. Returns the reversed text.',
 		parameters: Type.Object({
-			expression: Type.String({ description: 'A math expression like "2 + 3"' }),
+			text: Type.String({ description: 'The string to reverse.' }),
 		}),
 		execute: async (args) => {
-			const expr = args.expression as string;
-			return String(Function(`"use strict"; return (${expr})`)());
+			const s = args.text as string;
+			return s.split('').reverse().join('');
 		},
 	};
 
@@ -29,10 +31,10 @@ export default async function ({ init, payload }: FlueContext<Payload>) {
 
 	const result = await session.prompt(payload.question, {
 		role: '{{ROLE}}',
-		tools: [calculator],
+		tools: [stringReverse],
 		result: v.object({
 			answer: v.string(),
-			usedCalculator: v.boolean(),
+			toolUsed: v.boolean(),
 		}),
 	});
 

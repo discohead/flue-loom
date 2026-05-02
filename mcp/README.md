@@ -50,7 +50,7 @@ Both support MCP via similar config entries; consult their docs for the exact JS
 cd mcp
 pnpm install
 pnpm build
-# produces dist/server.js
+# produces dist/server.mjs
 ```
 
 ## Resolving endpoints
