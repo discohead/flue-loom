@@ -257,12 +257,19 @@ Errors:
 				}
 
 				const data = await httpJson(path, { method: 'POST', body: payload ?? {} });
+				// Flue's sync HTTP envelope is { result: <agent return> }. Unwrap so
+				// callers can address agent fields directly (e.g. result.sum instead
+				// of result.result.sum) and so structuredContent matches stream mode.
+				const unwrapped =
+					data && typeof data === 'object' && data !== null && 'result' in data
+						? (data as { result: unknown }).result
+						: data;
 				const output: Record<string, unknown> = {
 					endpoint: url,
 					agent,
 					sessionId: sid,
 					mode: 'sync' as const,
-					result: data,
+					result: unwrapped,
 				};
 				if (response_format === 'markdown') {
 					return {
@@ -409,7 +416,13 @@ Errors:
 						textBuffer += String((parsed as { text: unknown }).text ?? '');
 					}
 					if (ev.event === 'result') {
-						resultPayload = parsed;
+						// Flue's SSE 'result' event wraps the agent return in
+						// { type: 'result', data: <agent return> }. Unwrap so the
+						// 'result' field on structuredContent matches sync semantics.
+						resultPayload =
+							parsed && typeof parsed === 'object' && parsed !== null && 'data' in parsed
+								? (parsed as { data: unknown }).data
+								: parsed;
 					}
 				}
 			} catch (err) {

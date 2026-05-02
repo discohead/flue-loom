@@ -523,12 +523,13 @@ Errors:
 				method: "POST",
 				body: payload ?? {}
 			});
+			const unwrapped = data && typeof data === "object" && data !== null && "result" in data ? data.result : data;
 			const output = {
 				endpoint: url,
 				agent,
 				sessionId: sid,
 				mode: "sync",
-				result: data
+				result: unwrapped
 			};
 			if (response_format === "markdown") return {
 				content: [{
@@ -648,7 +649,7 @@ Errors:
 					data: parsed
 				});
 				if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
-				if (ev.event === "result") resultPayload = parsed;
+				if (ev.event === "result") resultPayload = parsed && typeof parsed === "object" && parsed !== null && "data" in parsed ? parsed.data : parsed;
 			}
 		} catch (err) {
 			if (err instanceof Error && err.name === "AbortError") return errorText(`Stream timed out after ${ms}ms talking to agent "${agent}" (session "${sid}") at ${url}. Increase timeoutMs or check why the agent stalled (try flue_invoke_agent in sync mode for a fresh attempt).`, {
