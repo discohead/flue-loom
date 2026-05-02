@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { httpJson, mapFlueError } from '../http.ts';
+import { HttpError, httpJson, mapFlueError } from '../http.ts';
 import { postSse, parseSse } from '../sse.ts';
 import {
 	addEndpoint,
@@ -15,7 +15,11 @@ import {
 	formatInvokeMarkdown,
 	formatStreamMarkdown,
 } from '../format.ts';
-import { CHARACTER_LIMIT, DEFAULT_STREAM_TIMEOUT_MS } from '../constants.ts';
+import {
+	CHARACTER_LIMIT,
+	DEFAULT_STREAM_TIMEOUT_MS,
+	MAX_EVENTS,
+} from '../constants.ts';
 
 // ─── Shared output sub-schemas ───────────────────────────────────────────────
 
@@ -235,11 +239,32 @@ Errors:
 
 			try {
 				if (m === 'webhook') {
-					const res = await fetch(path, {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json', 'x-webhook': 'true' },
-						body: JSON.stringify(payload ?? {}),
-					});
+					// Add a 60s timeout so a hung endpoint can't block the tool
+					// indefinitely, and reject non-2xx so the LLM doesn't see
+					// "{status: 404}" as a successful fire-and-forget invocation.
+					const ctl = new AbortController();
+					const timer = setTimeout(() => ctl.abort(), 60_000);
+					let res: Response;
+					try {
+						res = await fetch(path, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'x-webhook': 'true' },
+							body: JSON.stringify(payload ?? {}),
+							signal: ctl.signal,
+						});
+					} finally {
+						clearTimeout(timer);
+					}
+					if (!res.ok) {
+						const text = await res.text().catch(() => res.statusText);
+						let body: unknown = text;
+						try {
+							body = JSON.parse(text);
+						} catch {
+							/* keep as text */
+						}
+						throw new HttpError(res.status, res.statusText, body, path);
+					}
 					const output: Record<string, unknown> = {
 						endpoint: url,
 						agent,
@@ -394,18 +419,32 @@ Errors:
 			const events: Array<{ event: string; data: unknown }> = [];
 			let textBuffer = '';
 			let resultPayload: unknown = undefined;
+			let totalEventsSeen = 0;
+			let cappedEarly = false;
 
 			try {
 				const stream = await postSse(path, payload ?? {}, { signal: controller.signal });
 
 				for await (const ev of parseSse(stream)) {
+					totalEventsSeen++;
 					let parsed: unknown = ev.data;
 					try {
 						parsed = JSON.parse(ev.data);
 					} catch {
 						/* keep as string */
 					}
-					events.push({ event: ev.event, data: parsed });
+					// Cap the events log at MAX_EVENTS as defense-in-depth against
+					// runaway / pathological streams. Text + result accumulation
+					// continue regardless so the agent's output is never lost.
+					if (events.length < MAX_EVENTS) {
+						events.push({ event: ev.event, data: parsed });
+					} else if (!cappedEarly) {
+						events.push({
+							event: '__truncated__',
+							data: { reason: `event log capped at ${MAX_EVENTS} entries`, droppedFromHere: true },
+						});
+						cappedEarly = true;
+					}
 
 					if (
 						ev.event === 'text' &&
@@ -461,6 +500,8 @@ Errors:
 			}
 			if (truncated) {
 				truncationNote = `Event log truncated from ${events.length} to ${finalEvents.length} events to fit ${CHARACTER_LIMIT} char limit. Text and result are complete; use sync mode for less verbose responses.`;
+			} else if (cappedEarly) {
+				truncationNote = `Event log capped at MAX_EVENTS=${MAX_EVENTS} during streaming (saw ${totalEventsSeen} events total). Text and result are complete.`;
 			}
 
 			const output: Record<string, unknown> = {
@@ -470,7 +511,7 @@ Errors:
 				text: textBuffer,
 				result: resultPayload,
 				events: finalEvents,
-				...(truncated ? { truncated: true } : {}),
+				...(truncated || cappedEarly ? { truncated: true } : {}),
 			};
 
 			if (response_format === 'markdown') {

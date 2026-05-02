@@ -68,16 +68,32 @@ export async function postSse(
 	body: unknown,
 	options: PostSseOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
-	const res = await fetch(url, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Accept: 'text/event-stream',
-			...options.headers,
-		},
-		body: JSON.stringify(body ?? {}),
-		signal: options.signal,
-	});
+	// Default 60s timeout protects the *initial fetch* (handshake) only.
+	// Once the response headers arrive we clear the timer — stream
+	// lifetime is the caller's responsibility (flue_stream_agent governs
+	// it via its own timeoutMs / signal).
+	const ownCtl = options.signal ? null : new AbortController();
+	const ownTimer = ownCtl
+		? setTimeout(() => ownCtl.abort(), 60_000)
+		: null;
+	const signal = options.signal ?? ownCtl!.signal;
+
+	let res: Response;
+	try {
+		res = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'text/event-stream',
+				...options.headers,
+			},
+			body: JSON.stringify(body ?? {}),
+			signal,
+		});
+	} finally {
+		if (ownTimer) clearTimeout(ownTimer);
+	}
+
 	if (!res.ok) {
 		const text = await res.text().catch(() => res.statusText);
 		let parsed: unknown = text;

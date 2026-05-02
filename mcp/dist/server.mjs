@@ -121,16 +121,24 @@ async function* parseSse(body) {
 	if (trailing) yield trailing;
 }
 async function postSse(url, body, options = {}) {
-	const res = await fetch(url, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			Accept: "text/event-stream",
-			...options.headers
-		},
-		body: JSON.stringify(body ?? {}),
-		signal: options.signal
-	});
+	const ownCtl = options.signal ? null : new AbortController();
+	const ownTimer = ownCtl ? setTimeout(() => ownCtl.abort(), 6e4) : null;
+	const signal = options.signal ?? ownCtl.signal;
+	let res;
+	try {
+		res = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "text/event-stream",
+				...options.headers
+			},
+			body: JSON.stringify(body ?? {}),
+			signal
+		});
+	} finally {
+		if (ownTimer) clearTimeout(ownTimer);
+	}
 	if (!res.ok) {
 		const text = await res.text().catch(() => res.statusText);
 		let parsed = text;
@@ -319,6 +327,7 @@ function formatStreamMarkdown(endpoint, agent, sessionId, text, result, eventCou
 //#region src/constants.ts
 const CHARACTER_LIMIT = 25e3;
 const DEFAULT_STREAM_TIMEOUT_MS = 3e5;
+const MAX_EVENTS = 5e3;
 
 //#endregion
 //#region src/tools/index.ts
@@ -495,14 +504,30 @@ Errors:
 		const m = mode ?? "sync";
 		try {
 			if (m === "webhook") {
-				const res = await fetch(path, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						"x-webhook": "true"
-					},
-					body: JSON.stringify(payload ?? {})
-				});
+				const ctl = new AbortController();
+				const timer = setTimeout(() => ctl.abort(), 6e4);
+				let res;
+				try {
+					res = await fetch(path, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"x-webhook": "true"
+						},
+						body: JSON.stringify(payload ?? {}),
+						signal: ctl.signal
+					});
+				} finally {
+					clearTimeout(timer);
+				}
+				if (!res.ok) {
+					const text = await res.text().catch(() => res.statusText);
+					let body = text;
+					try {
+						body = JSON.parse(text);
+					} catch {}
+					throw new HttpError(res.status, res.statusText, body, path);
+				}
 				const output = {
 					endpoint: url,
 					agent,
@@ -637,17 +662,30 @@ Errors:
 		const events = [];
 		let textBuffer = "";
 		let resultPayload = void 0;
+		let totalEventsSeen = 0;
+		let cappedEarly = false;
 		try {
 			const stream = await postSse(path, payload ?? {}, { signal: controller.signal });
 			for await (const ev of parseSse(stream)) {
+				totalEventsSeen++;
 				let parsed = ev.data;
 				try {
 					parsed = JSON.parse(ev.data);
 				} catch {}
-				events.push({
+				if (events.length < MAX_EVENTS) events.push({
 					event: ev.event,
 					data: parsed
 				});
+				else if (!cappedEarly) {
+					events.push({
+						event: "__truncated__",
+						data: {
+							reason: `event log capped at ${MAX_EVENTS} entries`,
+							droppedFromHere: true
+						}
+					});
+					cappedEarly = true;
+				}
 				if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
 				if (ev.event === "result") resultPayload = parsed && typeof parsed === "object" && parsed !== null && "data" in parsed ? parsed.data : parsed;
 			}
@@ -696,6 +734,7 @@ Errors:
 			}, null, 2);
 		}
 		if (truncated) truncationNote = `Event log truncated from ${events.length} to ${finalEvents.length} events to fit ${CHARACTER_LIMIT} char limit. Text and result are complete; use sync mode for less verbose responses.`;
+		else if (cappedEarly) truncationNote = `Event log capped at MAX_EVENTS=${MAX_EVENTS} during streaming (saw ${totalEventsSeen} events total). Text and result are complete.`;
 		const output = {
 			endpoint: url,
 			agent,
@@ -703,7 +742,7 @@ Errors:
 			text: textBuffer,
 			result: resultPayload,
 			events: finalEvents,
-			...truncated ? { truncated: true } : {}
+			...truncated || cappedEarly ? { truncated: true } : {}
 		};
 		if (response_format === "markdown") return {
 			content: [{
