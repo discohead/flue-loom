@@ -1,0 +1,17 @@
+{
+	"name": "flue-loom",
+	"version": "0.1.0",
+	"description": "Author, deploy, compose, and converse with Flue SDK agents through Claude Code.",
+	"author": {
+		"name": "Jared McFarland"
+	},
+	"license": "MIT",
+	"keywords": ["flue", "agents", "claude-code", "agent-orchestration", "mcp"],
+	"components": {
+		"skills": "./skills",
+		"agents": "./agents",
+		"commands": "./commands",
+		"hooks": "./hooks/hooks.json",
+		"mcpServers": "./.claude-plugin/mcp.json"
+	}
+}

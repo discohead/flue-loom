@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.local
+
+# tsdown / tsc artifacts
+*.tsbuildinfo
+mcp/.tsdown/
+
+# Editor
+.vscode/
+.idea/
