@@ -7,9 +7,26 @@ import { dirname } from "node:path";
 import { homedir } from "node:os";
 
 //#region src/http.ts
+var HttpError = class extends Error {
+	status;
+	statusText;
+	body;
+	url;
+	constructor(status, statusText, body, url) {
+		const bodyStr = typeof body === "object" && body !== null ? JSON.stringify(body) : typeof body === "string" ? body : String(body);
+		super(`${status} ${statusText}: ${bodyStr}`);
+		this.name = "HttpError";
+		this.status = status;
+		this.statusText = statusText;
+		this.body = body;
+		this.url = url;
+	}
+};
 async function httpJson(url, opts = {}) {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 6e4);
+	const onCallerAbort = () => controller.abort();
+	opts.signal?.addEventListener("abort", onCallerAbort, { once: true });
 	try {
 		const res = await fetch(url, {
 			method: opts.method ?? "GET",
@@ -22,14 +39,42 @@ async function httpJson(url, opts = {}) {
 		});
 		const text = await res.text();
 		const parsed = (res.headers.get("content-type") ?? "").includes("application/json") && text ? JSON.parse(text) : text;
-		if (!res.ok) {
-			const message = typeof parsed === "object" && parsed !== null && "error" in parsed ? JSON.stringify(parsed.error) : typeof parsed === "string" ? parsed : res.statusText;
-			throw new Error(`${res.status} ${res.statusText}: ${message}`);
-		}
+		if (!res.ok) throw new HttpError(res.status, res.statusText, parsed, url);
 		return parsed;
 	} finally {
 		clearTimeout(timeout);
+		opts.signal?.removeEventListener("abort", onCallerAbort);
 	}
+}
+/**
+* Map a thrown error from a Flue HTTP call to an actionable message that
+* surfaces Flue-specific causes (trigger gating, structured error envelope,
+* model resolution, etc.) instead of just the raw status code.
+*
+* Pass `context` so the message can name the agent/session/endpoint.
+*/
+function mapFlueError(error, context) {
+	if (error instanceof HttpError) {
+		const where = context.agent ? `agent "${context.agent}" (session "${context.sessionId ?? "default"}") at ${context.endpoint}` : context.endpoint;
+		if (typeof error.body === "object" && error.body !== null && "error" in error.body && typeof error.body.error === "object") {
+			const inner = error.body.error;
+			return `Flue error [${String(inner.code ?? "unknown")}]: ${String(inner.message ?? "no message")} (HTTP ${error.status} from ${where})`;
+		}
+		switch (error.status) {
+			case 404: return context.agent ? `Agent "${context.agent}" not found at ${context.endpoint}. Try flue_list_agents to see available agents.` : `Endpoint not found: ${context.endpoint}. Verify the URL is correct and the server is running.`;
+			case 401:
+			case 403: return `Endpoint rejected the call (HTTP ${error.status}) for ${where}. Common cause: trigger-less agent in production mode. The endpoint must run with FLUE_MODE=local (\`flue dev\` and \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`.`;
+			case 408:
+			case 504: return `Timed out talking to ${where}. Consider flue_stream_agent for long-running agents.`;
+			case 429: return `Rate limited by ${context.endpoint}. Wait and retry.`;
+			case 500:
+			case 502:
+			case 503: return `Server error (HTTP ${error.status}) at ${where}: ${typeof error.body === "string" ? error.body : JSON.stringify(error.body)}`;
+			default: return `HTTP ${error.status} ${error.statusText} from ${where}: ${typeof error.body === "string" ? error.body : JSON.stringify(error.body)}`;
+		}
+	}
+	if (error instanceof Error && error.name === "AbortError") return `Request aborted (timed out or cancelled).`;
+	return `Unexpected error: ${error instanceof Error ? error.message : String(error)}`;
 }
 
 //#endregion
@@ -75,19 +120,24 @@ async function* parseSse(body) {
 	const trailing = flush();
 	if (trailing) yield trailing;
 }
-async function postSse(url, body, headers = {}) {
+async function postSse(url, body, options = {}) {
 	const res = await fetch(url, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
 			Accept: "text/event-stream",
-			...headers
+			...options.headers
 		},
-		body: JSON.stringify(body ?? {})
+		body: JSON.stringify(body ?? {}),
+		signal: options.signal
 	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => res.statusText);
-		throw new Error(`SSE POST failed: ${res.status} ${res.statusText}: ${text}`);
+		let parsed = text;
+		try {
+			parsed = JSON.parse(text);
+		} catch {}
+		throw new HttpError(res.status, res.statusText, parsed, url);
 	}
 	if (!res.body) throw new Error("SSE response has no body");
 	return res.body;
@@ -157,21 +207,118 @@ async function removeEndpoint(name) {
 *   2. Registry by name
 *   3. Registry default
 *   4. Built-in fallback (http://localhost:3583)
+*
+* Goes through the mutation chain so it serializes against concurrent
+* add/remove writes — otherwise a list_agents call interleaved with an
+* in-flight add_endpoint can read the pre-write registry and miss the
+* just-added entry.
 */
 async function resolveEndpoint(ref) {
 	if (ref && /^https?:\/\//.test(ref)) return ref.replace(/\/$/, "");
-	const state = await readRegistry();
-	if (ref) {
-		const match = state.endpoints.find((e) => e.name === ref);
-		if (match) return match.url.replace(/\/$/, "");
-		throw new Error(`Endpoint "${ref}" not found in registry. Add it with add_endpoint.`);
-	}
-	if (state.defaultName) {
-		const match = state.endpoints.find((e) => e.name === state.defaultName);
-		if (match) return match.url.replace(/\/$/, "");
-	}
-	return "http://localhost:3583";
+	return withMutation(async () => {
+		const state = await readRegistry();
+		if (ref) {
+			const match = state.endpoints.find((e) => e.name === ref);
+			if (match) return match.url.replace(/\/$/, "");
+			throw new Error(`Endpoint "${ref}" not found in registry. Add it with flue_add_endpoint.`);
+		}
+		if (state.defaultName) {
+			const match = state.endpoints.find((e) => e.name === state.defaultName);
+			if (match) return match.url.replace(/\/$/, "");
+		}
+		return "http://localhost:3583";
+	});
 }
+
+//#endregion
+//#region src/format.ts
+function formatAgentsMarkdown(endpoint, agents) {
+	const lines = [];
+	lines.push(`# Agents at \`${endpoint}\``);
+	lines.push("");
+	if (agents.length === 0) {
+		lines.push("_No agents registered._");
+		return lines.join("\n");
+	}
+	lines.push("| Agent | Webhook | Cron |");
+	lines.push("|---|---|---|");
+	for (const a of agents) {
+		const t = a.triggers ?? {};
+		lines.push(`| \`${a.name}\` | ${t.webhook ? "✓" : ""} | ${t.cron ? "`" + t.cron + "`" : ""} |`);
+	}
+	lines.push("");
+	lines.push(`_${agents.length} agent${agents.length === 1 ? "" : "s"} total._`);
+	return lines.join("\n");
+}
+function formatEndpointsMarkdown(state) {
+	const lines = [];
+	lines.push("# Registered Endpoints");
+	lines.push("");
+	if (state.endpoints.length === 0) {
+		lines.push("_No endpoints registered. Use `flue_add_endpoint` to add one._");
+		return lines.join("\n");
+	}
+	lines.push("| Default | Name | URL |");
+	lines.push("|---|---|---|");
+	for (const e of state.endpoints) {
+		const isDefault = e.name === state.defaultName ? "★" : "";
+		lines.push(`| ${isDefault} | \`${e.name}\` | ${e.url} |`);
+	}
+	lines.push("");
+	lines.push(`_${state.endpoints.length} endpoint${state.endpoints.length === 1 ? "" : "s"} total._`);
+	return lines.join("\n");
+}
+function formatInvokeMarkdown(endpoint, agent, sessionId, mode, body) {
+	const lines = [];
+	lines.push(`# Invoke \`${agent}\` (${mode})`);
+	lines.push("");
+	lines.push(`- **Endpoint**: \`${endpoint}\``);
+	lines.push(`- **Session**: \`${sessionId}\``);
+	lines.push("");
+	if (mode === "webhook") {
+		const w = body;
+		lines.push(`Webhook accepted (HTTP ${w.status ?? "?"}).`);
+	} else {
+		lines.push("## Result");
+		lines.push("");
+		lines.push("```json");
+		lines.push(JSON.stringify(body, null, 2));
+		lines.push("```");
+	}
+	return lines.join("\n");
+}
+function formatStreamMarkdown(endpoint, agent, sessionId, text, result, eventCount, truncated, truncationNote) {
+	const lines = [];
+	lines.push(`# Stream \`${agent}\``);
+	lines.push("");
+	lines.push(`- **Endpoint**: \`${endpoint}\``);
+	lines.push(`- **Session**: \`${sessionId}\``);
+	lines.push(`- **Events**: ${eventCount}${truncated ? " (truncated)" : ""}`);
+	lines.push("");
+	if (text) {
+		lines.push("## Output");
+		lines.push("");
+		lines.push(text.trim());
+		lines.push("");
+	}
+	if (result !== void 0) {
+		lines.push("## Result");
+		lines.push("");
+		lines.push("```json");
+		lines.push(JSON.stringify(result, null, 2));
+		lines.push("```");
+	}
+	if (truncationNote) {
+		lines.push("");
+		lines.push(`> **Note**: ${truncationNote}`);
+	}
+	return lines.join("\n");
+}
+
+//#endregion
+//#region src/constants.ts
+const CHARACTER_LIMIT = 25e3;
+const DEFAULT_STREAM_TIMEOUT_MS = 3e5;
 
 //#endregion
 //#region src/tools/index.ts
@@ -187,6 +334,26 @@ const RegistryShape = z.object({
 	endpoints: z.array(EndpointEntry),
 	defaultName: z.string().optional()
 });
+const ResponseFormat = z.enum(["json", "markdown"]).optional().describe("Format of the text content. \"json\" (default) returns a stringified JSON envelope; \"markdown\" returns a human-readable formatted block. structuredContent is identical regardless.");
+function jsonText(output) {
+	return {
+		content: [{
+			type: "text",
+			text: JSON.stringify(output, null, 2)
+		}],
+		structuredContent: output
+	};
+}
+function errorText(message, structured) {
+	return {
+		content: [{
+			type: "text",
+			text: message
+		}],
+		structuredContent: structured,
+		isError: true
+	};
+}
 function registerTools(server) {
 	server.registerTool("flue_list_agents", {
 		title: "List Flue Agents",
@@ -196,6 +363,7 @@ Calls GET /agents on the endpoint (local \`flue dev\` or a deployed Cloudflare W
 
 Args:
   - endpoint (string, optional): Endpoint URL or registered endpoint name. Resolution order: explicit URL → name in registry → registry default → http://localhost:3583. Use flue_list_endpoints to see registered names.
+  - response_format ('json' | 'markdown', optional): Default 'json'.
 
 Returns:
   {
@@ -219,7 +387,10 @@ Examples:
 Errors:
   - "Endpoint '<name>' not found in registry" → register it first with flue_add_endpoint
   - HTTP 404 / connection refused → endpoint is down or URL is wrong; verify with curl`,
-		inputSchema: { endpoint: z.string().optional().describe("Endpoint URL (http://… or https://…) or registered endpoint name. Falls back to registry default, then http://localhost:3583.") },
+		inputSchema: {
+			endpoint: z.string().optional().describe("Endpoint URL (http://… or https://…) or registered endpoint name. Falls back to registry default, then http://localhost:3583."),
+			response_format: ResponseFormat
+		},
 		outputSchema: {
 			endpoint: z.string(),
 			agents: z.array(AgentSummary)
@@ -230,20 +401,31 @@ Errors:
 			idempotentHint: true,
 			openWorldHint: true
 		}
-	}, async ({ endpoint }) => {
-		const url = await resolveEndpoint(endpoint);
-		const data = await httpJson(`${url}/agents`);
-		const output = {
-			endpoint: url,
-			agents: Array.isArray(data?.agents) ? data.agents : []
-		};
-		return {
-			content: [{
-				type: "text",
-				text: JSON.stringify(output, null, 2)
-			}],
-			structuredContent: output
-		};
+	}, async ({ endpoint, response_format }) => {
+		let url;
+		try {
+			url = await resolveEndpoint(endpoint);
+		} catch (err) {
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+		}
+		try {
+			const data = await httpJson(`${url}/agents`);
+			const agents = Array.isArray(data?.agents) ? data.agents : [];
+			const output = {
+				endpoint: url,
+				agents
+			};
+			if (response_format === "markdown") return {
+				content: [{
+					type: "text",
+					text: formatAgentsMarkdown(url, agents)
+				}],
+				structuredContent: output
+			};
+			return jsonText(output);
+		} catch (err) {
+			return errorText(mapFlueError(err, { endpoint: url }), { endpoint: url });
+		}
 	});
 	server.registerTool("flue_invoke_agent", {
 		title: "Invoke Flue Agent",
@@ -261,6 +443,7 @@ Args:
   - sessionId (string, optional): Session id. Default: "default".
   - payload (any, optional): JSON-serializable value passed to the agent handler as ctx.payload.
   - mode ('sync' | 'webhook', optional): Default: 'sync'.
+  - response_format ('json' | 'markdown', optional): Default 'json'.
 
 Returns (sync):
   { "endpoint": string, "agent": string, "sessionId": string, "mode": "sync", "result": <agent return value> }
@@ -283,7 +466,8 @@ Errors:
 			agent: z.string().describe("Agent name (matches the file at .flue/agents/<name>.{ts,js,mts,mjs})."),
 			sessionId: z.string().optional().describe("Session id; defaults to \"default\". Reuse to continue a conversation thread."),
 			payload: z.unknown().optional().describe("JSON-serializable payload passed to the agent handler as ctx.payload."),
-			mode: z.enum(["sync", "webhook"]).optional().describe("Invocation mode. \"sync\" returns the result body; \"webhook\" is fire-and-forget (HTTP 202). Default: sync.")
+			mode: z.enum(["sync", "webhook"]).optional().describe("Invocation mode. \"sync\" returns the result body; \"webhook\" is fire-and-forget (HTTP 202). Default: sync."),
+			response_format: ResponseFormat
 		},
 		outputSchema: {
 			endpoint: z.string(),
@@ -299,62 +483,88 @@ Errors:
 			idempotentHint: false,
 			openWorldHint: true
 		}
-	}, async ({ endpoint, agent, sessionId, payload, mode }) => {
-		const url = await resolveEndpoint(endpoint);
+	}, async ({ endpoint, agent, sessionId, payload, mode, response_format }) => {
+		let url;
+		try {
+			url = await resolveEndpoint(endpoint);
+		} catch (err) {
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+		}
 		const sid = sessionId ?? "default";
 		const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
-		if ((mode ?? "sync") === "webhook") {
-			const output = {
-				endpoint: url,
-				agent,
-				sessionId: sid,
-				mode: "webhook",
-				status: (await fetch(path, {
+		const m = mode ?? "sync";
+		try {
+			if (m === "webhook") {
+				const res = await fetch(path, {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
 						"x-webhook": "true"
 					},
 					body: JSON.stringify(payload ?? {})
-				})).status
+				});
+				const output = {
+					endpoint: url,
+					agent,
+					sessionId: sid,
+					mode: "webhook",
+					status: res.status
+				};
+				if (response_format === "markdown") return {
+					content: [{
+						type: "text",
+						text: formatInvokeMarkdown(url, agent, sid, "webhook", output)
+					}],
+					structuredContent: output
+				};
+				return jsonText(output);
+			}
+			const data = await httpJson(path, {
+				method: "POST",
+				body: payload ?? {}
+			});
+			const output = {
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				mode: "sync",
+				result: data
 			};
-			return {
+			if (response_format === "markdown") return {
 				content: [{
 					type: "text",
-					text: JSON.stringify(output, null, 2)
+					text: formatInvokeMarkdown(url, agent, sid, "sync", data)
 				}],
 				structuredContent: output
 			};
+			return jsonText(output);
+		} catch (err) {
+			return errorText(mapFlueError(err, {
+				endpoint: url,
+				agent,
+				sessionId: sid
+			}), {
+				endpoint: url,
+				agent,
+				sessionId: sid
+			});
 		}
-		const output = {
-			endpoint: url,
-			agent,
-			sessionId: sid,
-			mode: "sync",
-			result: await httpJson(path, {
-				method: "POST",
-				body: payload ?? {}
-			})
-		};
-		return {
-			content: [{
-				type: "text",
-				text: JSON.stringify(output, null, 2)
-			}],
-			structuredContent: output
-		};
 	});
 	server.registerTool("flue_stream_agent", {
 		title: "Stream Flue Agent",
 		description: `Invoke a Flue agent with SSE streaming and return the accumulated output.
 
-Like flue_invoke_agent in sync mode, but uses Server-Sent Events to stream the agent's progress. Useful for long-running agents (multi-turn LLM work) where you want to see text incrementally and inspect tool calls. Returns the final assembled state once the stream completes.
+Like flue_invoke_agent in sync mode, but uses Server-Sent Events to stream the agent's progress. Useful for long-running agents (multi-turn LLM work) where you want to see text incrementally and inspect tool calls. Returns the final assembled state once the stream completes (or the timeout triggers).
+
+The events log can grow large for long agents; if the JSON-stringified response exceeds the character limit (~25 KB), the events array is halved and a truncation note is added. The 'text' field and 'result' are kept in full.
 
 Args:
   - endpoint (string, optional): Same as flue_invoke_agent.
   - agent (string, required): Agent name.
   - sessionId (string, optional): Session id. Default: "default".
   - payload (any, optional): Agent payload.
+  - timeoutMs (number, optional): Max wall-clock time for the stream. Default: 300000 (5 min).
+  - response_format ('json' | 'markdown', optional): Default 'json'.
 
 Returns:
   {
@@ -365,7 +575,8 @@ Returns:
     "result": <unknown>,              // Final 'result' event payload
     "events": [                       // Full event log for replay/inspection
       { "event": string, "data": <unknown> }
-    ]
+    ],
+    "truncated"?: boolean            // True if events were dropped to fit
   }
 
 Event types in 'events':
@@ -378,18 +589,19 @@ Event types in 'events':
 
 Examples:
   - "Run hello with streaming" → agent="hello"
-  - "Watch tool calls during a turn" → events[] where event === 'tool_use'
-  - Long-running agents that exceed the sync 60s timeout
+  - "Watch tool calls during a turn" → look at events[] for event === 'tool_use'
+  - Long-running agents that exceed the 60s sync timeout
 
 Errors:
-  - HTTP failures: same status codes as flue_invoke_agent
-  - Connection drops mid-stream: 'events' contains everything received so far
-  - No client-side timeout currently (added in v0.2)`,
+  - HTTP failures map to actionable Flue messages (404 → flue_list_agents hint, 403 → FLUE_MODE hint, etc.)
+  - Stalled stream → aborted at timeoutMs with a clear message`,
 		inputSchema: {
 			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
 			agent: z.string().describe("Agent name."),
 			sessionId: z.string().optional().describe("Session id; defaults to \"default\"."),
-			payload: z.unknown().optional().describe("JSON-serializable payload passed to the agent handler.")
+			payload: z.unknown().optional().describe("JSON-serializable payload passed to the agent handler."),
+			timeoutMs: z.number().int().positive().optional().describe("Wall-clock timeout in milliseconds. Default: 300000 (5 minutes)."),
+			response_format: ResponseFormat
 		},
 		outputSchema: {
 			endpoint: z.string(),
@@ -400,7 +612,8 @@ Errors:
 			events: z.array(z.object({
 				event: z.string(),
 				data: z.unknown()
-			}))
+			})),
+			truncated: z.boolean().optional()
 		},
 		annotations: {
 			readOnlyHint: false,
@@ -408,40 +621,97 @@ Errors:
 			idempotentHint: false,
 			openWorldHint: true
 		}
-	}, async ({ endpoint, agent, sessionId, payload }) => {
-		const url = await resolveEndpoint(endpoint);
+	}, async ({ endpoint, agent, sessionId, payload, timeoutMs, response_format }) => {
+		let url;
+		try {
+			url = await resolveEndpoint(endpoint);
+		} catch (err) {
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+		}
 		const sid = sessionId ?? "default";
-		const stream = await postSse(`${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`, payload ?? {});
+		const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
+		const ms = timeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), ms);
 		const events = [];
 		let textBuffer = "";
 		let resultPayload = void 0;
-		for await (const ev of parseSse(stream)) {
-			let parsed = ev.data;
-			try {
-				parsed = JSON.parse(ev.data);
-			} catch {}
-			events.push({
-				event: ev.event,
-				data: parsed
+		try {
+			const stream = await postSse(path, payload ?? {}, { signal: controller.signal });
+			for await (const ev of parseSse(stream)) {
+				let parsed = ev.data;
+				try {
+					parsed = JSON.parse(ev.data);
+				} catch {}
+				events.push({
+					event: ev.event,
+					data: parsed
+				});
+				if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
+				if (ev.event === "result") resultPayload = parsed;
+			}
+		} catch (err) {
+			if (err instanceof Error && err.name === "AbortError") return errorText(`Stream timed out after ${ms}ms talking to agent "${agent}" (session "${sid}") at ${url}. Increase timeoutMs or check why the agent stalled (try flue_invoke_agent in sync mode for a fresh attempt).`, {
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				timedOutAt: ms,
+				partialEvents: events.length
 			});
-			if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
-			if (ev.event === "result") resultPayload = parsed;
+			return errorText(mapFlueError(err, {
+				endpoint: url,
+				agent,
+				sessionId: sid
+			}), {
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				partialEvents: events.length
+			});
+		} finally {
+			clearTimeout(timer);
 		}
-		const output = {
+		let finalEvents = events;
+		let truncated = false;
+		let truncationNote;
+		let envelope = JSON.stringify({
 			endpoint: url,
 			agent,
 			sessionId: sid,
 			text: textBuffer,
 			result: resultPayload,
 			events
+		}, null, 2);
+		while (envelope.length > CHARACTER_LIMIT && finalEvents.length > 1) {
+			finalEvents = finalEvents.slice(0, Math.max(1, Math.floor(finalEvents.length / 2)));
+			truncated = true;
+			envelope = JSON.stringify({
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				text: textBuffer,
+				result: resultPayload,
+				events: finalEvents
+			}, null, 2);
+		}
+		if (truncated) truncationNote = `Event log truncated from ${events.length} to ${finalEvents.length} events to fit ${CHARACTER_LIMIT} char limit. Text and result are complete; use sync mode for less verbose responses.`;
+		const output = {
+			endpoint: url,
+			agent,
+			sessionId: sid,
+			text: textBuffer,
+			result: resultPayload,
+			events: finalEvents,
+			...truncated ? { truncated: true } : {}
 		};
-		return {
+		if (response_format === "markdown") return {
 			content: [{
 				type: "text",
-				text: JSON.stringify(output, null, 2)
+				text: formatStreamMarkdown(url, agent, sid, textBuffer, resultPayload, events.length, truncated, truncationNote)
 			}],
 			structuredContent: output
 		};
+		return jsonText(output);
 	});
 	server.registerTool("flue_get_manifest", {
 		title: "Get Flue Manifest",
@@ -451,11 +721,15 @@ Currently equivalent to flue_list_agents — both call GET /agents and return th
 
 Args:
   - endpoint (string, optional): Endpoint URL or registered endpoint name.
+  - response_format ('json' | 'markdown', optional): Default 'json'.
 
 Returns: same shape as flue_list_agents.
 
 Note: this tool may be removed in a future version. Prefer flue_list_agents.`,
-		inputSchema: { endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default.") },
+		inputSchema: {
+			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
+			response_format: ResponseFormat
+		},
 		outputSchema: {
 			endpoint: z.string(),
 			agents: z.array(AgentSummary)
@@ -466,20 +740,31 @@ Note: this tool may be removed in a future version. Prefer flue_list_agents.`,
 			idempotentHint: true,
 			openWorldHint: true
 		}
-	}, async ({ endpoint }) => {
-		const url = await resolveEndpoint(endpoint);
-		const data = await httpJson(`${url}/agents`);
-		const output = {
-			endpoint: url,
-			agents: Array.isArray(data?.agents) ? data.agents : []
-		};
-		return {
-			content: [{
-				type: "text",
-				text: JSON.stringify(output, null, 2)
-			}],
-			structuredContent: output
-		};
+	}, async ({ endpoint, response_format }) => {
+		let url;
+		try {
+			url = await resolveEndpoint(endpoint);
+		} catch (err) {
+			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
+		}
+		try {
+			const data = await httpJson(`${url}/agents`);
+			const agents = Array.isArray(data?.agents) ? data.agents : [];
+			const output = {
+				endpoint: url,
+				agents
+			};
+			if (response_format === "markdown") return {
+				content: [{
+					type: "text",
+					text: formatAgentsMarkdown(url, agents)
+				}],
+				structuredContent: output
+			};
+			return jsonText(output);
+		} catch (err) {
+			return errorText(mapFlueError(err, { endpoint: url }), { endpoint: url });
+		}
 	});
 	server.registerTool("flue_add_endpoint", {
 		title: "Add Flue Endpoint",
@@ -489,7 +774,7 @@ Persists to \$FLUE_LOOM_HOME/endpoints.json (default: ~/.config/flue-loom/endpoi
 
 Args:
   - name (string, required): Short name, e.g. "local", "prod-cf", "staging".
-  - url (string, required): Full URL to the Flue HTTP endpoint. Trailing slashes are stripped.
+  - url (string, required): Full URL. Validated with new URL() — must be http(s)://. Trailing slashes are stripped.
   - default (boolean, optional): If true, set as the default endpoint. The first registered endpoint becomes default automatically.
 
 Returns:
@@ -500,9 +785,9 @@ Examples:
   - "Register the prod worker" → name="prod-cf", url="https://my-agents.example.workers.dev"
 
 Errors:
-  - URL validation: malformed URLs are accepted as strings in v0.1; v0.2 adds new URL() validation.`,
+  - Invalid URL → "Invalid URL: <url>. Expected http(s)://host[:port][/path]."`,
 		inputSchema: {
-			name: z.string().describe("Short name for the endpoint, e.g. \"local\" or \"prod-cf\"."),
+			name: z.string().min(1, "name cannot be empty").describe("Short name for the endpoint, e.g. \"local\" or \"prod-cf\"."),
 			url: z.string().describe("Full URL to the Flue HTTP endpoint, e.g. http://localhost:3583."),
 			default: z.boolean().optional().describe("If true, set as the default endpoint for endpoint-less calls.")
 		},
@@ -517,17 +802,25 @@ Errors:
 			openWorldHint: false
 		}
 	}, async ({ name, url, default: makeDefault }) => {
-		const output = {
+		let parsedUrl;
+		try {
+			parsedUrl = new URL(url);
+		} catch {
+			return errorText(`Invalid URL: "${url}". Expected http(s)://host[:port][/path].`, {
+				name,
+				url,
+				ok: false
+			});
+		}
+		if (!/^https?:$/.test(parsedUrl.protocol)) return errorText(`Unsupported URL protocol "${parsedUrl.protocol}". Expected http: or https:.`, {
+			name,
+			url,
+			ok: false
+		});
+		return jsonText({
 			ok: true,
 			registry: await addEndpoint(name, url, makeDefault)
-		};
-		return {
-			content: [{
-				type: "text",
-				text: JSON.stringify(output, null, 2)
-			}],
-			structuredContent: output
-		};
+		});
 	});
 	server.registerTool("flue_list_endpoints", {
 		title: "List Flue Endpoints",
@@ -535,7 +828,8 @@ Errors:
 
 Reads \$FLUE_LOOM_HOME/endpoints.json. Use to see which endpoints are configured before referencing one by name in flue_invoke_agent / flue_list_agents.
 
-Args: (none)
+Args:
+  - response_format ('json' | 'markdown', optional): Default 'json'.
 
 Returns:
   {
@@ -546,7 +840,7 @@ Returns:
 Examples:
   - "Which endpoints are configured?"
   - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name`,
-		inputSchema: {},
+		inputSchema: { response_format: ResponseFormat },
 		outputSchema: {
 			endpoints: z.array(EndpointEntry),
 			defaultName: z.string().optional()
@@ -557,19 +851,20 @@ Examples:
 			idempotentHint: true,
 			openWorldHint: false
 		}
-	}, async () => {
+	}, async ({ response_format }) => {
 		const state = await listEndpoints();
 		const output = {
 			endpoints: state.endpoints,
 			...state.defaultName !== void 0 ? { defaultName: state.defaultName } : {}
 		};
-		return {
+		if (response_format === "markdown") return {
 			content: [{
 				type: "text",
-				text: JSON.stringify(output, null, 2)
+				text: formatEndpointsMarkdown(state)
 			}],
 			structuredContent: output
 		};
+		return jsonText(output);
 	});
 	server.registerTool("flue_remove_endpoint", {
 		title: "Remove Flue Endpoint",
@@ -585,7 +880,7 @@ Returns:
 
 Examples:
   - "Forget the staging endpoint" → name="staging"`,
-		inputSchema: { name: z.string().describe("Name of the endpoint to remove.") },
+		inputSchema: { name: z.string().min(1, "name cannot be empty").describe("Name of the endpoint to remove.") },
 		outputSchema: {
 			ok: z.literal(true),
 			registry: RegistryShape
@@ -597,17 +892,10 @@ Examples:
 			openWorldHint: false
 		}
 	}, async ({ name }) => {
-		const output = {
+		return jsonText({
 			ok: true,
 			registry: await removeEndpoint(name)
-		};
-		return {
-			content: [{
-				type: "text",
-				text: JSON.stringify(output, null, 2)
-			}],
-			structuredContent: output
-		};
+		});
 	});
 }
 

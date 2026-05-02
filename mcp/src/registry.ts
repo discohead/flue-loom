@@ -88,22 +88,29 @@ export async function removeEndpoint(name: string): Promise<RegistryState> {
  *   2. Registry by name
  *   3. Registry default
  *   4. Built-in fallback (http://localhost:3583)
+ *
+ * Goes through the mutation chain so it serializes against concurrent
+ * add/remove writes — otherwise a list_agents call interleaved with an
+ * in-flight add_endpoint can read the pre-write registry and miss the
+ * just-added entry.
  */
 export async function resolveEndpoint(ref?: string): Promise<string> {
 	if (ref && /^https?:\/\//.test(ref)) return ref.replace(/\/$/, '');
 
-	const state = await readRegistry();
+	return withMutation(async () => {
+		const state = await readRegistry();
 
-	if (ref) {
-		const match = state.endpoints.find((e) => e.name === ref);
-		if (match) return match.url.replace(/\/$/, '');
-		throw new Error(`Endpoint "${ref}" not found in registry. Add it with add_endpoint.`);
-	}
+		if (ref) {
+			const match = state.endpoints.find((e) => e.name === ref);
+			if (match) return match.url.replace(/\/$/, '');
+			throw new Error(`Endpoint "${ref}" not found in registry. Add it with flue_add_endpoint.`);
+		}
 
-	if (state.defaultName) {
-		const match = state.endpoints.find((e) => e.name === state.defaultName);
-		if (match) return match.url.replace(/\/$/, '');
-	}
+		if (state.defaultName) {
+			const match = state.endpoints.find((e) => e.name === state.defaultName);
+			if (match) return match.url.replace(/\/$/, '');
+		}
 
-	return 'http://localhost:3583';
+		return 'http://localhost:3583';
+	});
 }

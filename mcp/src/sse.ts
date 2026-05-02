@@ -1,5 +1,7 @@
 // Minimal SSE parser. Reads a Response body stream, yields { event, data } pairs.
 
+import { HttpError } from './http.ts';
+
 export interface SseEvent {
 	event: string;
 	data: string;
@@ -56,23 +58,35 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncIterable
 	if (trailing) yield trailing;
 }
 
+export interface PostSseOptions {
+	headers?: Record<string, string>;
+	signal?: AbortSignal;
+}
+
 export async function postSse(
 	url: string,
 	body: unknown,
-	headers: Record<string, string> = {},
+	options: PostSseOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
 	const res = await fetch(url, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			Accept: 'text/event-stream',
-			...headers,
+			...options.headers,
 		},
 		body: JSON.stringify(body ?? {}),
+		signal: options.signal,
 	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => res.statusText);
-		throw new Error(`SSE POST failed: ${res.status} ${res.statusText}: ${text}`);
+		let parsed: unknown = text;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			/* keep as text */
+		}
+		throw new HttpError(res.status, res.statusText, parsed, url);
 	}
 	if (!res.body) throw new Error('SSE response has no body');
 	return res.body;
