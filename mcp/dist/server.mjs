@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 //#region src/http.ts
 var HttpError = class extends Error {
@@ -146,7 +146,7 @@ async function postSse(url, body, options = {}) {
 //#endregion
 //#region src/registry.ts
 function registryPath() {
-	return `${process.env.FLUE_LOOM_HOME ?? `${homedir()}/.config/flue-loom`}/endpoints.json`;
+	return join(process.env.FLUE_LOOM_HOME ?? join(homedir(), ".config", "flue-loom"), "endpoints.json");
 }
 async function readRegistry() {
 	try {

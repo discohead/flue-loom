@@ -2,7 +2,7 @@
 // Default location: $FLUE_LOOM_HOME or ~/.config/flue-loom/endpoints.json.
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 export interface Endpoint {
@@ -16,8 +16,8 @@ export interface RegistryState {
 }
 
 function registryPath(): string {
-	const home = process.env.FLUE_LOOM_HOME ?? `${homedir()}/.config/flue-loom`;
-	return `${home}/endpoints.json`;
+	const home = process.env.FLUE_LOOM_HOME ?? join(homedir(), '.config', 'flue-loom');
+	return join(home, 'endpoints.json');
 }
 
 async function readRegistry(): Promise<RegistryState> {

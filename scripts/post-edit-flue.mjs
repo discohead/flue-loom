@@ -28,11 +28,15 @@ try {
 	process.exit(0);
 }
 
-const filePath =
+// Normalize separators so the regex matches on Windows hook payloads too —
+// Claude Code passes OS-native paths (e.g. C:\…\agents\foo.ts) and the regex
+// is forward-slash anchored.
+const filePath = (
 	payload?.tool_input?.file_path ??
 	payload?.tool_input?.path ??
 	payload?.toolInput?.file_path ??
-	'';
+	''
+).replace(/\\/g, '/');
 
 if (!filePath || !AGENT_FILE_REGEX.test(filePath)) {
 	process.exit(0);
