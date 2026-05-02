@@ -1,9 +1,7 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import * as v from "valibot";
-import { toJsonSchema } from "@valibot/to-json-schema";
+import { z } from "zod";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
@@ -177,187 +175,304 @@ async function resolveEndpoint(ref) {
 
 //#endregion
 //#region src/tools/index.ts
-const ListAgentsInput = v.object({ endpoint: v.optional(v.string("Endpoint URL or registered endpoint name. Falls back to default.")) });
-const InvokeAgentInput = v.object({
-	endpoint: v.optional(v.string()),
-	agent: v.string("Agent name (matches the file at .flue/agents/<name>.{ts,js})"),
-	sessionId: v.optional(v.string("Session id; defaults to \"default\".")),
-	payload: v.optional(v.any()),
-	mode: v.optional(v.picklist(["sync", "webhook"], "Invocation mode. \"sync\" returns the result; \"webhook\" is fire-and-forget (returns 202)."))
+const AgentSummary = z.object({
+	name: z.string(),
+	triggers: z.unknown().optional()
+}).passthrough();
+const EndpointEntry = z.object({
+	name: z.string(),
+	url: z.string()
 });
-const StreamAgentInput = v.object({
-	endpoint: v.optional(v.string()),
-	agent: v.string(),
-	sessionId: v.optional(v.string()),
-	payload: v.optional(v.any())
+const RegistryShape = z.object({
+	endpoints: z.array(EndpointEntry),
+	defaultName: z.string().optional()
 });
-const GetManifestInput = v.object({ endpoint: v.optional(v.string()) });
-const AddEndpointInput = v.object({
-	name: v.string("Short name for the endpoint, e.g. \"local\" or \"prod-cf\"."),
-	url: v.string("Full URL to the Flue HTTP endpoint, e.g. http://localhost:3583."),
-	default: v.optional(v.boolean("If true, set as the default endpoint."))
-});
-const ListEndpointsInput = v.object({});
-const RemoveEndpointInput = v.object({ name: v.string() });
-async function callListAgents(input) {
-	const url = await resolveEndpoint(input.endpoint);
-	const data = await httpJson(`${url}/agents`);
-	return { content: [{
-		type: "text",
-		text: JSON.stringify({
-			endpoint: url,
-			...data
-		}, null, 2)
-	}] };
-}
-async function callInvokeAgent(input) {
-	const url = await resolveEndpoint(input.endpoint);
-	const sessionId = input.sessionId ?? "default";
-	const path = `${url}/agents/${encodeURIComponent(input.agent)}/${encodeURIComponent(sessionId)}`;
-	if (input.mode === "webhook") {
-		const res = await fetch(path, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-webhook": "true"
-			},
-			body: JSON.stringify(input.payload ?? {})
-		});
-		return { content: [{
-			type: "text",
-			text: JSON.stringify({
-				status: res.status,
-				mode: "webhook"
-			})
-		}] };
-	}
-	const data = await httpJson(path, {
-		method: "POST",
-		body: input.payload ?? {}
-	});
-	return { content: [{
-		type: "text",
-		text: JSON.stringify(data, null, 2)
-	}] };
-}
-async function callStreamAgent(input) {
-	const url = await resolveEndpoint(input.endpoint);
-	const sessionId = input.sessionId ?? "default";
-	const stream = await postSse(`${url}/agents/${encodeURIComponent(input.agent)}/${encodeURIComponent(sessionId)}`, input.payload ?? {});
-	const events = [];
-	let textBuffer = "";
-	let resultPayload = void 0;
-	for await (const ev of parseSse(stream)) {
-		let parsed = ev.data;
-		try {
-			parsed = JSON.parse(ev.data);
-		} catch {}
-		events.push({
-			event: ev.event,
-			data: parsed
-		});
-		if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
-		if (ev.event === "result") resultPayload = parsed;
-	}
-	return { content: [{
-		type: "text",
-		text: JSON.stringify({
-			endpoint: url,
-			agent: input.agent,
-			sessionId,
-			text: textBuffer,
-			result: resultPayload,
-			events
-		}, null, 2)
-	}] };
-}
-async function callGetManifest(input) {
-	const url = await resolveEndpoint(input.endpoint);
-	const data = await httpJson(`${url}/agents`);
-	return { content: [{
-		type: "text",
-		text: JSON.stringify({
-			endpoint: url,
-			...data ?? {}
-		}, null, 2)
-	}] };
-}
-async function callAddEndpoint(input) {
-	const state = await addEndpoint(input.name, input.url, input.default);
-	return { content: [{
-		type: "text",
-		text: JSON.stringify({
-			ok: true,
-			registry: state
-		}, null, 2)
-	}] };
-}
-async function callListEndpoints(_input) {
-	const state = await listEndpoints();
-	return { content: [{
-		type: "text",
-		text: JSON.stringify(state, null, 2)
-	}] };
-}
-async function callRemoveEndpoint(input) {
-	const state = await removeEndpoint(input.name);
-	return { content: [{
-		type: "text",
-		text: JSON.stringify({
-			ok: true,
-			registry: state
-		}, null, 2)
-	}] };
-}
-function makeTool(name, description, schema, call) {
-	return {
-		name,
-		description,
-		inputSchema: toJsonSchema(schema),
-		call: async (raw) => {
-			return call(v.parse(schema, raw ?? {}));
+function registerTools(server) {
+	server.registerTool("list_agents", {
+		title: "List Agents",
+		description: "List all agents at a Flue HTTP endpoint (manifest from GET /agents).",
+		inputSchema: { endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default.") },
+		outputSchema: {
+			endpoint: z.string(),
+			agents: z.array(AgentSummary)
+		},
+		annotations: {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: true
 		}
-	};
-}
-const tools = [
-	makeTool("list_agents", "List all agents at a Flue HTTP endpoint (manifest from GET /agents).", ListAgentsInput, callListAgents),
-	makeTool("invoke_agent", "Invoke a Flue agent in sync mode (default) or as a webhook (fire-and-forget). Returns the result envelope.", InvokeAgentInput, callInvokeAgent),
-	makeTool("stream_agent", "Invoke a Flue agent and stream events via SSE. Returns the accumulated text, structured result, and full event log.", StreamAgentInput, callStreamAgent),
-	makeTool("get_manifest", "Fetch the agent manifest from a Flue endpoint. Currently equivalent to list_agents; kept distinct for future fields.", GetManifestInput, callGetManifest),
-	makeTool("add_endpoint", "Register a Flue endpoint by name. Persisted to $FLUE_LOOM_HOME/endpoints.json.", AddEndpointInput, callAddEndpoint),
-	makeTool("list_endpoints", "List all registered Flue endpoints and the current default.", ListEndpointsInput, callListEndpoints),
-	makeTool("remove_endpoint", "Remove a registered endpoint by name.", RemoveEndpointInput, callRemoveEndpoint)
-];
-
-//#endregion
-//#region src/server.ts
-const server = new Server({
-	name: "flue-loom",
-	version: "0.1.0"
-}, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map((t) => ({
-	name: t.name,
-	description: t.description,
-	inputSchema: t.inputSchema
-})) }));
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-	const tool = tools.find((t) => t.name === request.params.name);
-	if (!tool) throw new Error(`Unknown tool: ${request.params.name}`);
-	try {
-		return await tool.call(request.params.arguments);
-	} catch (err) {
+	}, async ({ endpoint }) => {
+		const url = await resolveEndpoint(endpoint);
+		const data = await httpJson(`${url}/agents`);
+		const output = {
+			endpoint: url,
+			agents: Array.isArray(data?.agents) ? data.agents : []
+		};
 		return {
 			content: [{
 				type: "text",
-				text: `Error: ${err instanceof Error ? err.message : String(err)}`
+				text: JSON.stringify(output, null, 2)
 			}],
-			isError: true
+			structuredContent: output
 		};
-	}
+	});
+	server.registerTool("invoke_agent", {
+		title: "Invoke Agent",
+		description: "Invoke a Flue agent in sync mode (default) or as a webhook (fire-and-forget). Returns the result envelope.",
+		inputSchema: {
+			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
+			agent: z.string().describe("Agent name (matches the file at .flue/agents/<name>.{ts,js,mts,mjs})."),
+			sessionId: z.string().optional().describe("Session id; defaults to \"default\"."),
+			payload: z.unknown().optional().describe("JSON-serializable payload passed to the agent handler as ctx.payload."),
+			mode: z.enum(["sync", "webhook"]).optional().describe("Invocation mode. \"sync\" returns the result body; \"webhook\" is fire-and-forget (HTTP 202). Default: sync.")
+		},
+		outputSchema: {
+			endpoint: z.string(),
+			agent: z.string(),
+			sessionId: z.string(),
+			mode: z.enum(["sync", "webhook"]),
+			result: z.unknown().optional(),
+			status: z.number().optional()
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: false,
+			openWorldHint: true
+		}
+	}, async ({ endpoint, agent, sessionId, payload, mode }) => {
+		const url = await resolveEndpoint(endpoint);
+		const sid = sessionId ?? "default";
+		const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
+		if ((mode ?? "sync") === "webhook") {
+			const output = {
+				endpoint: url,
+				agent,
+				sessionId: sid,
+				mode: "webhook",
+				status: (await fetch(path, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-webhook": "true"
+					},
+					body: JSON.stringify(payload ?? {})
+				})).status
+			};
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify(output, null, 2)
+				}],
+				structuredContent: output
+			};
+		}
+		const output = {
+			endpoint: url,
+			agent,
+			sessionId: sid,
+			mode: "sync",
+			result: await httpJson(path, {
+				method: "POST",
+				body: payload ?? {}
+			})
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+	server.registerTool("stream_agent", {
+		title: "Stream Agent",
+		description: "Invoke a Flue agent and stream events via SSE. Returns the accumulated text, structured result, and full event log.",
+		inputSchema: {
+			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
+			agent: z.string().describe("Agent name."),
+			sessionId: z.string().optional().describe("Session id; defaults to \"default\"."),
+			payload: z.unknown().optional().describe("JSON-serializable payload passed to the agent handler.")
+		},
+		outputSchema: {
+			endpoint: z.string(),
+			agent: z.string(),
+			sessionId: z.string(),
+			text: z.string(),
+			result: z.unknown().optional(),
+			events: z.array(z.object({
+				event: z.string(),
+				data: z.unknown()
+			}))
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: false,
+			openWorldHint: true
+		}
+	}, async ({ endpoint, agent, sessionId, payload }) => {
+		const url = await resolveEndpoint(endpoint);
+		const sid = sessionId ?? "default";
+		const stream = await postSse(`${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`, payload ?? {});
+		const events = [];
+		let textBuffer = "";
+		let resultPayload = void 0;
+		for await (const ev of parseSse(stream)) {
+			let parsed = ev.data;
+			try {
+				parsed = JSON.parse(ev.data);
+			} catch {}
+			events.push({
+				event: ev.event,
+				data: parsed
+			});
+			if (ev.event === "text" && parsed && typeof parsed === "object" && "text" in parsed) textBuffer += String(parsed.text ?? "");
+			if (ev.event === "result") resultPayload = parsed;
+		}
+		const output = {
+			endpoint: url,
+			agent,
+			sessionId: sid,
+			text: textBuffer,
+			result: resultPayload,
+			events
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+	server.registerTool("get_manifest", {
+		title: "Get Manifest",
+		description: "Fetch the agent manifest from a Flue endpoint. Currently equivalent to list_agents; kept distinct for future fields.",
+		inputSchema: { endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default.") },
+		outputSchema: {
+			endpoint: z.string(),
+			agents: z.array(AgentSummary)
+		},
+		annotations: {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: true
+		}
+	}, async ({ endpoint }) => {
+		const url = await resolveEndpoint(endpoint);
+		const data = await httpJson(`${url}/agents`);
+		const output = {
+			endpoint: url,
+			agents: Array.isArray(data?.agents) ? data.agents : []
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+	server.registerTool("add_endpoint", {
+		title: "Add Endpoint",
+		description: "Register a Flue endpoint by name. Persisted to $FLUE_LOOM_HOME/endpoints.json.",
+		inputSchema: {
+			name: z.string().describe("Short name for the endpoint, e.g. \"local\" or \"prod-cf\"."),
+			url: z.string().describe("Full URL to the Flue HTTP endpoint, e.g. http://localhost:3583."),
+			default: z.boolean().optional().describe("If true, set as the default endpoint for endpoint-less calls.")
+		},
+		outputSchema: {
+			ok: z.literal(true),
+			registry: RegistryShape
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false
+		}
+	}, async ({ name, url, default: makeDefault }) => {
+		const output = {
+			ok: true,
+			registry: await addEndpoint(name, url, makeDefault)
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+	server.registerTool("list_endpoints", {
+		title: "List Endpoints",
+		description: "List all registered Flue endpoints and the current default.",
+		inputSchema: {},
+		outputSchema: {
+			endpoints: z.array(EndpointEntry),
+			defaultName: z.string().optional()
+		},
+		annotations: {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false
+		}
+	}, async () => {
+		const state = await listEndpoints();
+		const output = {
+			endpoints: state.endpoints,
+			...state.defaultName !== void 0 ? { defaultName: state.defaultName } : {}
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+	server.registerTool("remove_endpoint", {
+		title: "Remove Endpoint",
+		description: "Remove a registered endpoint by name.",
+		inputSchema: { name: z.string().describe("Name of the endpoint to remove.") },
+		outputSchema: {
+			ok: z.literal(true),
+			registry: RegistryShape
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false
+		}
+	}, async ({ name }) => {
+		const output = {
+			ok: true,
+			registry: await removeEndpoint(name)
+		};
+		return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output, null, 2)
+			}],
+			structuredContent: output
+		};
+	});
+}
+
+//#endregion
+//#region src/server.ts
+const server = new McpServer({
+	name: "flue-loom",
+	version: "0.1.0"
 });
+registerTools(server);
 const transport = new StdioServerTransport();
 await server.connect(transport);
-process.stdin.resume();
 
 //#endregion
 export {  };
