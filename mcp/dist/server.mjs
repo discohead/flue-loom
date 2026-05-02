@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { homedir } from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { homedir } from "node:os";
 
 //#region src/http.ts
 var HttpError = class extends Error {
@@ -713,59 +713,6 @@ Errors:
 		};
 		return jsonText(output);
 	});
-	server.registerTool("flue_get_manifest", {
-		title: "Get Flue Manifest",
-		description: `Fetch the agent manifest from a Flue endpoint.
-
-Currently equivalent to flue_list_agents — both call GET /agents and return the same shape. Kept as a separate tool for forward compatibility (a future Flue version may differentiate manifest metadata from runtime registry).
-
-Args:
-  - endpoint (string, optional): Endpoint URL or registered endpoint name.
-  - response_format ('json' | 'markdown', optional): Default 'json'.
-
-Returns: same shape as flue_list_agents.
-
-Note: this tool may be removed in a future version. Prefer flue_list_agents.`,
-		inputSchema: {
-			endpoint: z.string().optional().describe("Endpoint URL or registered endpoint name. Falls back to default."),
-			response_format: ResponseFormat
-		},
-		outputSchema: {
-			endpoint: z.string(),
-			agents: z.array(AgentSummary)
-		},
-		annotations: {
-			readOnlyHint: true,
-			destructiveHint: false,
-			idempotentHint: true,
-			openWorldHint: true
-		}
-	}, async ({ endpoint, response_format }) => {
-		let url;
-		try {
-			url = await resolveEndpoint(endpoint);
-		} catch (err) {
-			return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? null });
-		}
-		try {
-			const data = await httpJson(`${url}/agents`);
-			const agents = Array.isArray(data?.agents) ? data.agents : [];
-			const output = {
-				endpoint: url,
-				agents
-			};
-			if (response_format === "markdown") return {
-				content: [{
-					type: "text",
-					text: formatAgentsMarkdown(url, agents)
-				}],
-				structuredContent: output
-			};
-			return jsonText(output);
-		} catch (err) {
-			return errorText(mapFlueError(err, { endpoint: url }), { endpoint: url });
-		}
-	});
 	server.registerTool("flue_add_endpoint", {
 		title: "Add Flue Endpoint",
 		description: `Register a Flue endpoint by name for later reuse.
@@ -901,13 +848,17 @@ Examples:
 
 //#endregion
 //#region src/server.ts
+const SERVER_NAME = "flue-loom-mcp-server";
+const SERVER_VERSION = "0.1.0";
 const server = new McpServer({
-	name: "flue-loom-mcp-server",
-	version: "0.1.0"
+	name: SERVER_NAME,
+	version: SERVER_VERSION
 });
 registerTools(server);
 const transport = new StdioServerTransport();
 await server.connect(transport);
+const registryHome = process.env.FLUE_LOOM_HOME ?? `${homedir()}/.config/flue-loom`;
+console.error(`[${SERVER_NAME}] v${SERVER_VERSION} ready · registry: ${registryHome}/endpoints.json`);
 
 //#endregion
 export {  };

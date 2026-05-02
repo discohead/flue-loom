@@ -11,7 +11,6 @@ This is the **operator face** of `flue-loom`. The authoring face (skills, subage
 | `flue_list_agents` | `GET /agents` — manifest of agents at an endpoint |
 | `flue_invoke_agent` | `POST /agents/:name/:id` — sync or webhook |
 | `flue_stream_agent` | SSE stream of an invocation; returns accumulated text + result |
-| `flue_get_manifest` | Like `flue_list_agents`; kept distinct for future fields |
 | `flue_add_endpoint` | Register a named endpoint (persisted) |
 | `flue_list_endpoints` | List registered endpoints + default |
 | `flue_remove_endpoint` | Remove a registered endpoint |
