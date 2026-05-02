@@ -27,7 +27,17 @@ async function readRegistry(): Promise<RegistryState> {
 		// Defensive defaults.
 		if (!Array.isArray(parsed.endpoints)) parsed.endpoints = [];
 		return parsed;
-	} catch {
+	} catch (err) {
+		// ENOENT (no registry yet) is the legitimate cold-start path; silent.
+		// Anything else (corrupted JSON, EACCES, EIO) is a real problem the
+		// user should know about — log to stderr (stdio MCP reserves stdout
+		// for JSON-RPC) but still return an empty registry so subsequent
+		// add_endpoint calls have a chance to repair the file.
+		const code = (err as NodeJS.ErrnoException | undefined)?.code;
+		if (code !== 'ENOENT') {
+			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+			console.error(`[flue-loom-mcp-server] registry read failed (${detail}); starting with empty registry`);
+		}
 		return { endpoints: [] };
 	}
 }
@@ -73,7 +83,12 @@ export async function addEndpoint(name: string, url: string, makeDefault?: boole
 export async function removeEndpoint(name: string): Promise<RegistryState> {
 	return withMutation(async () => {
 		const state = await readRegistry();
+		const before = state.endpoints.length;
 		state.endpoints = state.endpoints.filter((e) => e.name !== name);
+		// Short-circuit when the name wasn't present — no point rewriting the
+		// file just to produce an identical state, and matches the docstring's
+		// "no-op when name is absent" claim more honestly.
+		if (state.endpoints.length === before) return state;
 		if (state.defaultName === name) state.defaultName = state.endpoints[0]?.name;
 		await writeRegistry(state);
 		return state;
@@ -109,8 +124,25 @@ export async function resolveEndpoint(ref?: string): Promise<string> {
 		if (state.defaultName) {
 			const match = state.endpoints.find((e) => e.name === state.defaultName);
 			if (match) return match.url.replace(/\/$/, '');
+			// Default name set but the entry is gone — surface as a config error
+			// rather than silently falling back to localhost.
+			throw new Error(
+				`Default endpoint "${state.defaultName}" is registered but no longer exists in the endpoints list. ` +
+					`Add it back with flue_add_endpoint or set a different default.`,
+			);
 		}
 
+		// Cold start: registry has no entries and no default. Localhost is the
+		// only sane default for the bundled-with-flue-dev case. If the registry
+		// has entries but no default was ever set, suggest configuring one.
+		if (state.endpoints.length > 0) {
+			throw new Error(
+				`No default endpoint configured (registry has ${state.endpoints.length} entries: ${state.endpoints
+					.map((e) => `"${e.name}"`)
+					.join(', ')}). ` +
+					`Pass an explicit endpoint URL/name, or call flue_add_endpoint with default=true.`,
+			);
+		}
 		return 'http://localhost:3583';
 	});
 }

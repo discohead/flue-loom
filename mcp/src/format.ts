@@ -2,7 +2,7 @@
 // response_format='markdown'. JSON output is the default — markdown is
 // for human-facing chat clients (Claude Desktop, ChatGPT, Cursor).
 
-import type { RegistryState, Endpoint } from './registry.ts';
+import type { RegistryState } from './registry.ts';
 
 interface AgentLike {
 	name: string;
@@ -111,6 +111,3 @@ export function formatStreamMarkdown(
 	}
 	return lines.join('\n');
 }
-
-// Re-export Endpoint type for callers that import from './format.ts'.
-export type { Endpoint };

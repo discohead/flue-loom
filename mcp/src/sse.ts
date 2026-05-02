@@ -23,39 +23,57 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncIterable
 		return e;
 	};
 
-	while (true) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
 
-		let nl: number;
-		while ((nl = buffer.indexOf('\n')) !== -1) {
-			const line = buffer.slice(0, nl).replace(/\r$/, '');
-			buffer = buffer.slice(nl + 1);
+			let nl: number;
+			while ((nl = buffer.indexOf('\n')) !== -1) {
+				const line = buffer.slice(0, nl).replace(/\r$/, '');
+				buffer = buffer.slice(nl + 1);
 
-			if (line === '') {
-				const e = flush();
-				if (e) yield e;
-				continue;
+				if (line === '') {
+					const e = flush();
+					if (e) yield e;
+					continue;
+				}
+				if (line.startsWith(':')) continue; // comment
+
+				const colon = line.indexOf(':');
+				const field = colon === -1 ? line : line.slice(0, colon);
+				const rawValue = colon === -1 ? '' : line.slice(colon + 1);
+				const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
+
+				if (field === 'event') {
+					event = value;
+				} else if (field === 'data') {
+					dataLines.push(value);
+				}
+				// Other fields (id, retry) ignored.
 			}
-			if (line.startsWith(':')) continue; // comment
+		}
 
-			const colon = line.indexOf(':');
-			const field = colon === -1 ? line : line.slice(0, colon);
-			const rawValue = colon === -1 ? '' : line.slice(colon + 1);
-			const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
-
-			if (field === 'event') {
-				event = value;
-			} else if (field === 'data') {
-				dataLines.push(value);
-			}
-			// Other fields (id, retry) ignored.
+		const trailing = flush();
+		if (trailing) yield trailing;
+	} catch (err) {
+		// Stream errored mid-read. Flush any pending event as
+		// __incomplete__ so partially-buffered text isn't silently lost.
+		if (dataLines.length > 0 || event !== '') {
+			yield { event: '__incomplete__', data: dataLines.join('\n') };
+		}
+		throw err;
+	} finally {
+		// Release the reader lock so the underlying response body can be GC'd
+		// even when the consumer breaks out of the for-await loop early
+		// (e.g. on AbortError from a timeoutMs trigger).
+		try {
+			reader.releaseLock();
+		} catch {
+			/* lock may already be released if read() rejected */
 		}
 	}
-
-	const trailing = flush();
-	if (trailing) yield trailing;
 }
 
 export interface PostSseOptions {

@@ -98,30 +98,42 @@ async function* parseSse(body) {
 		dataLines = [];
 		return e;
 	};
-	while (true) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
-		let nl;
-		while ((nl = buffer.indexOf("\n")) !== -1) {
-			const line = buffer.slice(0, nl).replace(/\r$/, "");
-			buffer = buffer.slice(nl + 1);
-			if (line === "") {
-				const e = flush();
-				if (e) yield e;
-				continue;
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			let nl;
+			while ((nl = buffer.indexOf("\n")) !== -1) {
+				const line = buffer.slice(0, nl).replace(/\r$/, "");
+				buffer = buffer.slice(nl + 1);
+				if (line === "") {
+					const e = flush();
+					if (e) yield e;
+					continue;
+				}
+				if (line.startsWith(":")) continue;
+				const colon = line.indexOf(":");
+				const field = colon === -1 ? line : line.slice(0, colon);
+				const rawValue = colon === -1 ? "" : line.slice(colon + 1);
+				const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+				if (field === "event") event = value;
+				else if (field === "data") dataLines.push(value);
 			}
-			if (line.startsWith(":")) continue;
-			const colon = line.indexOf(":");
-			const field = colon === -1 ? line : line.slice(0, colon);
-			const rawValue = colon === -1 ? "" : line.slice(colon + 1);
-			const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
-			if (field === "event") event = value;
-			else if (field === "data") dataLines.push(value);
 		}
+		const trailing = flush();
+		if (trailing) yield trailing;
+	} catch (err) {
+		if (dataLines.length > 0 || event !== "") yield {
+			event: "__incomplete__",
+			data: dataLines.join("\n")
+		};
+		throw err;
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch {}
 	}
-	const trailing = flush();
-	if (trailing) yield trailing;
 }
 async function postSse(url, body, options = {}) {
 	const ownCtl = options.signal ? null : new AbortController();
@@ -165,7 +177,11 @@ async function readRegistry() {
 		const parsed = JSON.parse(raw);
 		if (!Array.isArray(parsed.endpoints)) parsed.endpoints = [];
 		return parsed;
-	} catch {
+	} catch (err) {
+		if (err?.code !== "ENOENT") {
+			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+			console.error(`[flue-loom-mcp-server] registry read failed (${detail}); starting with empty registry`);
+		}
 		return { endpoints: [] };
 	}
 }
@@ -204,7 +220,9 @@ async function addEndpoint(name, url, makeDefault) {
 async function removeEndpoint(name) {
 	return withMutation(async () => {
 		const state = await readRegistry();
+		const before = state.endpoints.length;
 		state.endpoints = state.endpoints.filter((e) => e.name !== name);
+		if (state.endpoints.length === before) return state;
 		if (state.defaultName === name) state.defaultName = state.endpoints[0]?.name;
 		await writeRegistry(state);
 		return state;
@@ -236,7 +254,9 @@ async function resolveEndpoint(ref) {
 		if (state.defaultName) {
 			const match = state.endpoints.find((e) => e.name === state.defaultName);
 			if (match) return match.url.replace(/\/$/, "");
+			throw new Error(`Default endpoint "${state.defaultName}" is registered but no longer exists in the endpoints list. Add it back with flue_add_endpoint or set a different default.`);
 		}
+		if (state.endpoints.length > 0) throw new Error(`No default endpoint configured (registry has ${state.endpoints.length} entries: ${state.endpoints.map((e) => `"${e.name}"`).join(", ")}). Pass an explicit endpoint URL/name, or call flue_add_endpoint with default=true.`);
 		return "http://localhost:3583";
 	});
 }
@@ -524,7 +544,7 @@ Errors:
 					clearTimeout(timer);
 				}
 				if (!res.ok) {
-					const text = await res.text().catch(() => res.statusText);
+					const text = await res.text().catch((readErr) => `${res.statusText} (response body unreadable: ${readErr instanceof Error ? readErr.message : String(readErr)})`);
 					let body = text;
 					try {
 						body = JSON.parse(text);
@@ -562,7 +582,7 @@ Errors:
 			if (response_format === "markdown") return {
 				content: [{
 					type: "text",
-					text: formatInvokeMarkdown(url, agent, sid, "sync", data)
+					text: formatInvokeMarkdown(url, agent, sid, "sync", unwrapped)
 				}],
 				structuredContent: output
 			};

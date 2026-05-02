@@ -256,7 +256,10 @@ Errors:
 						clearTimeout(timer);
 					}
 					if (!res.ok) {
-						const text = await res.text().catch(() => res.statusText);
+						const text = await res.text().catch(
+							(readErr: unknown) =>
+								`${res.statusText} (response body unreadable: ${readErr instanceof Error ? readErr.message : String(readErr)})`,
+						);
 						let body: unknown = text;
 						try {
 							body = JSON.parse(text);
@@ -298,7 +301,7 @@ Errors:
 				};
 				if (response_format === 'markdown') {
 					return {
-						content: [{ type: 'text', text: formatInvokeMarkdown(url, agent, sid, 'sync', data) }],
+						content: [{ type: 'text', text: formatInvokeMarkdown(url, agent, sid, 'sync', unwrapped) }],
 						structuredContent: output,
 					};
 				}

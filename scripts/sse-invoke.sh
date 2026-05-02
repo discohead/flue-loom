@@ -7,9 +7,15 @@
 #   sse-invoke.sh http://localhost:3583/agents/hello/test-1 '{}'
 #
 # Emits:
-#   - text events to stdout as plain text (the LLM's streaming output)
-#   - other events (start, tool_use, idle) to stderr as JSON for debugging
+#   - text_delta event payloads to stdout as plain text (the LLM's streaming output)
+#   - other events (agent_start, tool_start/end, turn_end, idle, etc.) to stderr as JSON
 #   - the final result to stdout as a final line: RESULT: <json>
+#
+# IMPORTANT: this is a best-effort, lossy text decoder. The awk script only
+# unescapes \n and \" inside text_delta payloads — not \t, unicode escapes,
+# or any string containing the substring `"}`. For accurate streaming use
+# the MCP server's flue_stream_agent tool, which uses a real JSON parser.
+# This helper exists for quick CLI debugging only.
 
 set -euo pipefail
 
@@ -34,7 +40,7 @@ curl -N -sS -X POST \
 	/^event: / { event = substr($0, 8); next; }
 	/^data: / {
 		data = substr($0, 7);
-		if (event == "text") {
+		if (event == "text_delta") {
 			# Print the streaming text directly. Decode \n in JSON-ish text.
 			# Simplest pragmatic decode: replace common escapes; let consumers
 			# handle the rest.

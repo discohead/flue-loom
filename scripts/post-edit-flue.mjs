@@ -23,8 +23,13 @@ for await (const chunk of process.stdin) input += chunk;
 let payload;
 try {
 	payload = JSON.parse(input || '{}');
-} catch {
-	// Malformed input — exit silently (don't block).
+} catch (err) {
+	// Hook payload shape may have changed in a Claude Code upgrade.
+	// Surface to stderr (non-blocking) so the user notices the lint
+	// stopped working, then exit 0 so we don't fail the parent tool.
+	console.error(
+		`flue-loom hook: malformed input — ${err instanceof Error ? err.message : String(err)}`,
+	);
 	process.exit(0);
 }
 
@@ -45,7 +50,16 @@ if (!filePath || !AGENT_FILE_REGEX.test(filePath)) {
 let source = '';
 try {
 	source = readFileSync(filePath, 'utf-8');
-} catch {
+} catch (err) {
+	// ENOENT is fine — the file may have been deleted/moved between the
+	// edit and the hook firing. EACCES / EIO / other codes are real
+	// problems the user needs to know about.
+	const code = (err && typeof err === 'object' && 'code' in err) ? String(err.code) : '';
+	if (code !== 'ENOENT') {
+		console.error(
+			`flue-loom hook: cannot read ${filePath} (${code || (err instanceof Error ? err.message : String(err))})`,
+		);
+	}
 	process.exit(0);
 }
 
