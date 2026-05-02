@@ -1,0 +1,31 @@
+{
+	"name": "@flue-loom/mcp",
+	"version": "0.1.0",
+	"description": "MCP server for the Flue SDK operator face — list and invoke Flue agents over HTTP from any MCP host (Claude Code, Claude Desktop, ChatGPT desktop, Cursor).",
+	"license": "MIT",
+	"type": "module",
+	"main": "./dist/server.mjs",
+	"bin": {
+		"flue-loom-mcp": "./dist/server.mjs"
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"build": "tsdown",
+		"dev": "tsx src/server.ts",
+		"check:types": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@valibot/to-json-schema": "^1.0.0",
+		"valibot": "^1.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"tsdown": "^0.20.3",
+		"tsx": "^4.19.0",
+		"typescript": "^5.6.0"
+	},
+	"engines": {
+		"node": ">=22"
+	}
+}
