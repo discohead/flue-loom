@@ -1,0 +1,14 @@
+---
+name: {{name}}
+description: {{DESCRIPTION}}
+---
+
+<!--
+Flue validates this frontmatter at build time (Agent Skills spec):
+- name: lowercase letters, digits, single hyphens, <= 64 chars, and it MUST equal this directory's name.
+- description: <= 1024 chars; say what the skill does AND when to use it — it is the whole routing decision.
+Mount it from an agent:  import {{camelName}} from '../skills/{{name}}/SKILL.md';  useSkill({{camelName}});
+Supporting files next to this one are packaged and read on demand; never put secrets or symlinks here.
+-->
+
+{{INSTRUCTIONS}}

@@ -1,0 +1,8 @@
+{
+	"name": "support-desk",
+	"private": true,
+	"type": "module",
+	"scripts": { "dev": "vite dev", "build": "vite build" },
+	"dependencies": { "@flue/runtime": "^2.1.1", "hono": "^4.12.32", "valibot": "^1.5.0" },
+	"devDependencies": { "@flue/cli": "^2.1.1", "@flue/vite": "^2.1.1", "typescript": "^7.0.2", "vite": "^8.0.14" }
+}

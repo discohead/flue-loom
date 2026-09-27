@@ -2,15 +2,23 @@ node_modules/
 .DS_Store
 *.log
 .env
-.env.local
+.env.*
+.dev.vars
 
 # tsdown / tsc artifacts
 *.tsbuildinfo
-mcp/.tsdown/
 
-# Eval fixture build output and lockfile (regenerated on `pnpm install`)
+# MCP bundle builds
+mcp/.mcpb-build/
+mcp/*.mcpb
+
+# Fixture apps (installed and run locally for tests/evals)
 mcp/eval/fixture/dist/
-mcp/eval/fixture/pnpm-lock.yaml
+mcp/eval/fixture/package-lock.json
+mcp/eval/fixture/.wrangler/
+
+# `claude plugin eval` output
+evals/results/
 
 # Editor
 .vscode/

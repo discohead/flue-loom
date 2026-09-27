@@ -1,0 +1,22 @@
+import { defineTool } from '@flue/runtime';
+import * as v from 'valibot';
+
+// Mount in an agent with `useTool({{exportName}})`. The description is the
+// model's only documentation: say what it does, when to use it, and what it returns.
+export const {{exportName}} = defineTool({
+	name: '{{tool_name}}',
+	description: '{{DESCRIPTION}}',
+	input: v.object({
+		// Top-level object schema; arguments arrive parsed as `data`.
+		query: v.pipe(v.string(), v.minLength(1)),
+	}),
+	// output: v.object({ ... }), // optional: validate and type the result
+	timeoutMs: 30_000,
+	async run({ data, signal, log }) {
+		log.info('{{tool_name}} called', { query: data.query });
+		// Pass `signal` to I/O so cancellation and timeouts stop the work.
+		const result = { query: data.query, results: [] as string[] };
+		// Return `{ output: <JSON-serializable> }` (or a plain string) — never a bare object.
+		return { output: result };
+	},
+});

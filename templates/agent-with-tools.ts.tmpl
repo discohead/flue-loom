@@ -1,0 +1,62 @@
+'use agent';
+import {
+	type AgentProps,
+	bash,
+	defineTool,
+	usePersistentState,
+	useModel,
+	useResponseFinish,
+	useSandbox,
+	useTool,
+} from '@flue/runtime';
+import { Bash, InMemoryFs } from 'just-bash';
+import * as v from 'valibot';
+
+// A tool shared with other agents would live in src/tools/ and be imported.
+const summarizeFile = defineTool({
+	name: 'summarize_file',
+	description: 'Summarize one workspace file in three bullet points. Returns the summary text.',
+	input: v.object({ path: v.string() }),
+	harness: true,
+	async run({ harness, data }) {
+		const content = await harness.sandbox.readFile(data.path);
+		const { text } = await harness.prompt(`Summarize in three bullet points:\n\n${content}`);
+		return text;
+	},
+});
+
+export function {{Name}}({ id }: AgentProps) {
+	useModel('{{MODEL}}');
+	// In-memory virtual sandbox: read/write/edit/bash/grep/glob tools, no host access.
+	useSandbox(bash(() => new Bash({ fs: new InMemoryFs() })));
+	useTool(summarizeFile);
+
+	// Durable per-conversation state; capabilities can follow it.
+	const [approved, setApproved] = usePersistentState('approved', false);
+	useTool({
+		name: 'record_approval',
+		description: 'Record that the user explicitly approved publishing the result.',
+		async run() {
+			setApproved(true);
+			return 'Approval recorded. The publish_result tool is now available.';
+		},
+	});
+	if (approved) {
+		useTool({
+			name: 'publish_result',
+			description: 'Publish the final result. Only available after approval.',
+			input: v.object({ title: v.string(), body: v.string() }),
+			async run({ data }) {
+				// Replace with a real side effect (make it idempotent).
+				return { output: { published: true, title: data.title } };
+			},
+		});
+	}
+
+	// Stamp token usage onto the response metadata clients receive.
+	useResponseFinish(({ response }) => ({ totalTokens: response.usage.totalTokens }));
+
+	return `{{INSTRUCTIONS}}
+
+Conversation: ${id}. Ask for explicit approval before publishing anything.`;
+}

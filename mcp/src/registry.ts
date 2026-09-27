@@ -1,146 +1,102 @@
-// Endpoint registry. Persists named Flue HTTP endpoints to a JSON file.
-// Default location: $FLUE_LOOM_HOME or ~/.config/flue-loom/endpoints.json.
+// Agent registry: named Flue agent mount URLs, persisted as JSON so every MCP
+// host on the machine shares them. Location: $FLUE_LOOM_HOME/agents.json,
+// default ~/.config/flue-loom/agents.json. Tokens are never stored — entries
+// name the environment variables that hold them.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
-export interface Endpoint {
+export interface RegisteredAgent {
 	name: string;
+	/** Agent mount URL (app.ts route), without a conversation id. */
 	url: string;
+	description?: string;
+	/** Environment variable holding a bearer token for this agent's routes. */
+	token_env?: string;
+	/** Static, non-secret headers sent with every request. */
+	headers?: Record<string, string>;
+	/** Header name → environment variable holding its value (for secret headers). */
+	header_env?: Record<string, string>;
 }
 
-export interface RegistryState {
-	endpoints: Endpoint[];
-	defaultName?: string;
+interface RegistryFile {
+	version: 1;
+	agents: RegisteredAgent[];
 }
 
-function registryPath(): string {
-	const home = process.env.FLUE_LOOM_HOME ?? join(homedir(), '.config', 'flue-loom');
-	return join(home, 'endpoints.json');
+export function registryHome(): string {
+	return process.env.FLUE_LOOM_HOME || join(homedir(), '.config', 'flue-loom');
 }
 
-async function readRegistry(): Promise<RegistryState> {
+export function registryPath(): string {
+	return join(registryHome(), 'agents.json');
+}
+
+async function readRegistry(): Promise<RegistryFile> {
 	try {
-		const raw = await readFile(registryPath(), 'utf-8');
-		const parsed = JSON.parse(raw) as RegistryState;
-		// Defensive defaults.
-		if (!Array.isArray(parsed.endpoints)) parsed.endpoints = [];
-		return parsed;
+		const parsed = JSON.parse(await readFile(registryPath(), 'utf-8')) as Partial<RegistryFile>;
+		const agents = Array.isArray(parsed.agents) ? parsed.agents.filter(isEntry) : [];
+		return { version: 1, agents };
 	} catch (err) {
-		// ENOENT (no registry yet) is the legitimate cold-start path; silent.
-		// Anything else (corrupted JSON, EACCES, EIO) is a real problem the
-		// user should know about — log to stderr (stdio MCP reserves stdout
-		// for JSON-RPC) but still return an empty registry so subsequent
-		// add_endpoint calls have a chance to repair the file.
-		const code = (err as NodeJS.ErrnoException | undefined)?.code;
-		if (code !== 'ENOENT') {
-			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-			console.error(`[flue-loom-mcp-server] registry read failed (${detail}); starting with empty registry`);
+		// A missing file is the normal cold start. Anything else (corrupt JSON,
+		// permissions) is reported on stderr — stdout carries JSON-RPC — and the
+		// registry reads as empty so a later write can repair it.
+		if ((err as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
+			const detail = err instanceof Error ? err.message : String(err);
+			console.error(`[flue-loom] could not read ${registryPath()} (${detail}); treating the registry as empty`);
 		}
-		return { endpoints: [] };
+		return { version: 1, agents: [] };
 	}
 }
 
-async function writeRegistry(state: RegistryState): Promise<void> {
-	const path = registryPath();
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, JSON.stringify(state, null, 2) + '\n', 'utf-8');
+function isEntry(value: unknown): value is RegisteredAgent {
+	const entry = value as RegisteredAgent | null;
+	return typeof entry?.name === 'string' && typeof entry.url === 'string';
 }
 
-// Serialize all registry mutations to avoid concurrent read-modify-write races
-// when MCP processes multiple tools/call requests in parallel.
-let mutationChain: Promise<unknown> = Promise.resolve();
+async function writeRegistry(state: RegistryFile): Promise<void> {
+	const path = registryPath();
+	await mkdir(dirname(path), { recursive: true });
+	// Write-then-rename so a crash never leaves a half-written registry.
+	const temp = `${path}.${process.pid}.tmp`;
+	await writeFile(temp, `${JSON.stringify(state, null, '\t')}\n`, 'utf-8');
+	await rename(temp, path);
+}
 
-function withMutation<T>(work: () => Promise<T>): Promise<T> {
-	const next = mutationChain.then(work, work);
-	mutationChain = next.catch(() => {
-		/* swallow chain errors so future calls don't reject */
-	});
+// Serialize registry access: MCP hosts may run several tool calls concurrently.
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(work: () => Promise<T>): Promise<T> {
+	const next = queue.then(work, work);
+	queue = next.catch(() => undefined);
 	return next;
 }
 
-export async function listEndpoints(): Promise<RegistryState> {
-	return withMutation(() => readRegistry());
+export function listRegisteredAgents(): Promise<RegisteredAgent[]> {
+	return serialized(async () => (await readRegistry()).agents);
 }
 
-export async function addEndpoint(name: string, url: string, makeDefault?: boolean): Promise<RegistryState> {
-	return withMutation(async () => {
+export function findRegisteredAgent(name: string): Promise<RegisteredAgent | undefined> {
+	return serialized(async () => (await readRegistry()).agents.find((agent) => agent.name === name));
+}
+
+export function upsertAgent(entry: RegisteredAgent): Promise<{ replaced: boolean }> {
+	return serialized(async () => {
 		const state = await readRegistry();
-		const existing = state.endpoints.findIndex((e) => e.name === name);
-		if (existing >= 0) {
-			state.endpoints[existing] = { name, url };
-		} else {
-			state.endpoints.push({ name, url });
-		}
-		if (makeDefault) state.defaultName = name;
-		// Auto-promote on first registration so the cold-start case has a default.
-		if (!state.defaultName && state.endpoints.length === 1) state.defaultName = name;
+		const index = state.agents.findIndex((agent) => agent.name === entry.name);
+		if (index >= 0) state.agents[index] = entry;
+		else state.agents.push(entry);
 		await writeRegistry(state);
-		return state;
+		return { replaced: index >= 0 };
 	});
 }
 
-export async function removeEndpoint(name: string): Promise<RegistryState> {
-	return withMutation(async () => {
+export function removeAgent(name: string): Promise<{ removed: boolean }> {
+	return serialized(async () => {
 		const state = await readRegistry();
-		const before = state.endpoints.length;
-		state.endpoints = state.endpoints.filter((e) => e.name !== name);
-		// Short-circuit when the name wasn't present — no point rewriting the
-		// file just to produce an identical state, and matches the docstring's
-		// "no-op when name is absent" claim more honestly.
-		if (state.endpoints.length === before) return state;
-		if (state.defaultName === name) state.defaultName = state.endpoints[0]?.name;
-		await writeRegistry(state);
-		return state;
-	});
-}
-
-/**
- * Resolve an endpoint reference to a URL.
- *
- * Order:
- *   1. Explicit URL (starts with http:// or https://)
- *   2. Registry by name
- *   3. Registry default
- *   4. Built-in fallback (http://localhost:3583), only when registry is empty
- */
-export async function resolveEndpoint(ref?: string): Promise<string> {
-	// Goes through the mutation chain so a concurrent add/remove can't be
-	// read partially.
-	if (ref && /^https?:\/\//.test(ref)) return ref.replace(/\/$/, '');
-
-	return withMutation(async () => {
-		const state = await readRegistry();
-
-		if (ref) {
-			const match = state.endpoints.find((e) => e.name === ref);
-			if (match) return match.url.replace(/\/$/, '');
-			throw new Error(`Endpoint "${ref}" not found in registry. Add it with flue_add_endpoint.`);
-		}
-
-		if (state.defaultName) {
-			const match = state.endpoints.find((e) => e.name === state.defaultName);
-			if (match) return match.url.replace(/\/$/, '');
-			// Default name set but the entry is gone — surface as a config error
-			// rather than silently falling back to localhost.
-			throw new Error(
-				`Default endpoint "${state.defaultName}" is registered but no longer exists in the endpoints list. ` +
-					`Add it back with flue_add_endpoint or set a different default.`,
-			);
-		}
-
-		// Cold start: registry has no entries and no default. Localhost is the
-		// only sane default for the bundled-with-flue-dev case. If the registry
-		// has entries but no default was ever set, suggest configuring one.
-		if (state.endpoints.length > 0) {
-			throw new Error(
-				`No default endpoint configured (registry has ${state.endpoints.length} entries: ${state.endpoints
-					.map((e) => `"${e.name}"`)
-					.join(', ')}). ` +
-					`Pass an explicit endpoint URL/name, or call flue_add_endpoint with default=true.`,
-			);
-		}
-		return 'http://localhost:3583';
+		const agents = state.agents.filter((agent) => agent.name !== name);
+		if (agents.length === state.agents.length) return { removed: false };
+		await writeRegistry({ version: 1, agents });
+		return { removed: true };
 	});
 }

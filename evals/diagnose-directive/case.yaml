@@ -1,0 +1,24 @@
+schema_version: "1.1"
+name: diagnose-directive
+description: Finds why a Flue 2 agent is silently not registered (the directive sits below the imports). Run with --scaffold.
+tags: [debugging, agents]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 15
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    This workspace is my Flue project. `src/app.ts` mounts the `Support` agent, but `vite dev` fails saying `Support` isn't a registered agent, and I can't see why — the file looks fine to me. What's wrong, and exactly how do I fix it? Don't edit anything; just explain.
+graders:
+  - name: mentions-directive
+    type: regex
+    pattern: "use agent"
+  - name: root-cause
+    type: llm
+    weight: 2
+    criteria: |
+      PASS if the answer does both of the following; otherwise FAIL.
+      1. Identifies the root cause: in `src/agents/support.ts` the `'use agent'` directive appears after the import statements, so it is not in the directive prologue and Flue does not register the module's agents.
+      2. Gives the fix: move `'use agent';` to the very first line of the file, above every import.
+      An answer that blames something else (the mount, the model id, the tool definition) as the cause is a FAIL.
+expected_outcome: Explains that 'use agent' must be the first statement, above the imports.

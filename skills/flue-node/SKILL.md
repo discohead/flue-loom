@@ -1,117 +1,68 @@
 ---
 name: flue-node
-description: Use when targeting Node for deployment, understanding the Hono server entry, debugging local invocation, or configuring the in-memory session store.
+description: Use when targeting or deploying Flue 2 on Node.js — vite dev (port 5173), vite build to dist/server.mjs, vite preview, PORT (default 3000), environment and secrets, externalized dependencies, local() sandbox, sqlite()/db.ts persistence, CORS, multi-replica ownership, and hosting on Docker, Fly, Render, Railway, AWS, or SST.
+user-invocable: false
 ---
 
-# Node deployment
+# Node.js target
 
-Targeting Node produces a self-contained `dist/server.mjs` — a Hono HTTP server that imports all agents/roles, exposes them via `/agents/:name/:id`, and holds session state in memory.
-
-## Build behavior
-
-`packages/sdk/src/build-plugin-node.ts` declares `bundle: 'esbuild'`. Flue runs esbuild after generating the entry, externalizing your project's direct dependencies (resolved from `node_modules` at runtime) and bundling Flue infrastructure inline.
-
-Output: `dist/server.mjs`. Run with `node dist/server.mjs`. Default port `3583` (override via `PORT` env var).
-
-## Routes (Hono)
-
-```
-GET  /health                    → { status: 'ok' }
-GET  /agents                    → manifest JSON
-ALL  /agents/:name/:id          → invoke agent
-```
-
-The invoke route supports three modes by header:
-
-| Header | Mode | Response |
-|---|---|---|
-| `x-webhook: true` | webhook | 202 Accepted, fire-and-forget |
-| `Accept: text/event-stream` | SSE | streamed events |
-| (none) | sync | JSON `{ result: ... }` |
-
-## SSE event shape
-
-```
-event: start
-data: {"agent":"hello","id":"thread-1"}
-
-event: text
-data: {"text":"Hello..."}
-
-event: tool_use
-data: {"name":"read","input":{...}}
-
-event: idle
-data: {}
-
-event: result
-data: {"result":...}
-```
-
-The CLI's SSE consumer (`packages/cli/bin/flue.ts:418`) is the canonical parser. The plugin's `scripts/sse-invoke.sh` is a simplified bash equivalent for tooling.
-
-## FLUE_MODE gate
-
-```typescript
-const isLocalMode = process.env.FLUE_MODE === 'local';
-```
-
-`flue dev` and `flue run` set `FLUE_MODE=local`. In local mode, trigger-less agents are invokable. In production (no FLUE_MODE), trigger-less agents return 403/404 — they have no route. See `flue-triggers` for details.
-
-## Session store
-
-Default: `InMemorySessionStore` from `packages/sdk/src/session.ts`. Lives in process memory. Process restart = clean slate. Acceptable for dev and stateless agents; not for production multi-instance setups.
-
-For durable state on Node, override:
-
-```typescript
-import { init } from '@flue/sdk/client';
-
-const agent = await init({
-  persist: myCustomStore,  // implement SessionStore
-});
-```
-
-A custom `SessionStore` implements `get(agentId, sessionId)`, `set(agentId, sessionId, data)`, `delete(agentId, sessionId)`, etc. Could be Redis, SQLite, Postgres — your call.
-
-## Node version
-
-Requires Node 22+. The build target sets the runtime environment to Node 22. Older versions miss APIs Flue uses (e.g., `node:util.parseEnv`).
-
-## Local sandbox
-
-`init({ sandbox: 'local' })` mounts `process.cwd()` at `/workspace` inside the agent. The agent sees your dev repo. Useful for an agent that operates on the project running it.
-
-`'local'` is Node-only — throws on Cloudflare.
-
-## Custom port
+## Develop, build, run
 
 ```bash
-PORT=4000 node dist/server.mjs
-flue dev --port 4000
+npx vite dev                 # app.ts via Vite's module graph on :5173; hot reload; re-scans 'use agent' changes
+npx vite build               # → dist/server.mjs (self-starting) + dist/app.mjs (non-listening, embeddable)
+npx vite preview             # serves the BUILT artifact with production behavior — a faithful pre-deploy check
+PORT=8080 node dist/server.mjs   # default port 3000
 ```
 
-## Deploy patterns
+- `vite dev` loads `.env`, `.env.local`, `.env.<mode>`, `.env.<mode>.local` (shell wins), restarts on `flue.config.*` edits, and applies permissive localhost CORS. A persistent dev DB lives at `node_modules/.cache/flue/dev.db` unless `db.ts` exists.
+- The built server reads **only the real environment** (no `.env`) and has **no CORS layer** — add Hono `cors()` in `app.ts` for cross-origin browsers.
+- The build externalizes your `package.json` dependencies: ship `dist/` **with** `node_modules` (or install in the image). Flue forces SSR output, `node22` target, `.mjs` names; `build.outDir` (default `dist`) and `build.sourcemap` stay yours.
+- Node ≥ 22.19. There are no `flue dev`/`flue build` commands.
 
-Node deploy is unopinionated — Flue produces a self-contained `server.mjs`. Run it however you run Node services:
+In Claude Code, run `vite dev` in the background with output to a log, then poll for `Local:` (or use `/flue-loom:dev`); talk to agents with `/flue-loom:talk` or the flue MCP tools.
 
-- `pm2 start dist/server.mjs`
-- `systemd` unit
-- Docker (`CMD ["node", "/app/dist/server.mjs"]`)
-- `fly.io`, Render, Railway, etc.
+## State
 
-Provide `ANTHROPIC_API_KEY` in env. Provide `FLUE_MODE=local` only if you genuinely want trigger-less agents reachable in prod (almost never).
+Without `db.ts` the built server uses **in-memory SQLite**: a restart loses every conversation and queued submission. Before deploying anything real:
 
-## Common pitfalls
+```ts
+// src/db.ts
+import { sqlite } from '@flue/runtime/node';
+export default sqlite('./data/flue.db'); // single host; mount a persistent volume
+```
 
-- Missing `ANTHROPIC_API_KEY` → model resolution throws on first call.
-- Using port 3583 elsewhere → port collision; pass `--port`.
-- Setting `FLUE_MODE=local` in production by accident → exposes intended-internal agents.
-- Restarting process = sessions lost (in-memory store).
+For host loss or multiple replicas use an ecosystem adapter (`npx flue add database postgres --print`). **One live owner per conversation** — shared databases enable replacement, not active-active: route each conversation id to one replica (sticky routing) and avoid overlapping owners during rollouts. A replacement recovers interrupted work at startup and via lease scans. See `flue-durability`.
 
-## Related
+## `local()` sandbox (Node only)
 
-- `flue-cloudflare` — the alternative target
-- `flue-triggers` — FLUE_MODE gating
-- `flue-lifecycle` — `flue dev` watch loop
-- `flue-debugging` — Node-specific recipes
+`useSandbox(local({ cwd?, env? }))` gives the agent the real filesystem and shell of the host — no isolation; only essential env vars pass through unless you add them to `env`. Use in trusted hosts/containers/CI. See `flue-sandboxes`.
+
+## Secrets
+
+Supply provider keys (`ANTHROPIC_API_KEY`, …) through the host's secret mechanism; locally `set -a; source .env; set +a; node dist/server.mjs`. Never bake keys into images or commit `.env`.
+
+## Hosting
+
+```dockerfile
+FROM node:22-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY dist ./dist
+ENV PORT=3000
+EXPOSE 3000
+CMD ["node", "dist/server.mjs"]
+```
+
+Build `dist/` first (or add a build stage with dev deps). Persist `./data` (sqlite) on a volume or use an external database. Platform guides: `flue docs read ecosystem/deploy/{node,docker,fly,render,railway,aws,sst}`. In-process cron (`croner` in `app.ts`) runs in every replica — gate it to one or use the platform's scheduler (`flue-workflows`).
+
+## Checklist before shipping
+
+- [ ] `db.ts` with a durable adapter (or accept process-lifetime state).
+- [ ] Every mounted agent behind auth middleware; CORS configured if browsers call cross-origin.
+- [ ] `npm run check:types`, `npx vite build`, `npx vite preview` smoke test (`/flue-loom:talk` against it).
+- [ ] Provider keys present in the runtime environment; `node_modules` shipped with `dist/`.
+- [ ] Single owner per conversation if running more than one replica.
+
+Docs: `flue docs read guide/node-target`, `guide/deploy`, `ecosystem/deploy/node`.

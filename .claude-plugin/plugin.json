@@ -1,17 +1,13 @@
 {
 	"name": "flue-loom",
-	"version": "0.1.0",
-	"description": "Author, deploy, compose, and converse with Flue SDK agents through Claude Code.",
+	"displayName": "Flue Loom",
+	"version": "0.2.0",
+	"description": "Build, run, debug, and ship Flue 2 agents (withastro/flue) from Claude Code: version-aware skills, specialist subagents, /flue-loom commands, edit-time lint, and an MCP server that talks to any deployed Flue agent.",
 	"author": {
 		"name": "Jared McFarland"
 	},
+	"homepage": "https://github.com/discohead/flue-loom",
+	"repository": "https://github.com/discohead/flue-loom",
 	"license": "MIT",
-	"keywords": ["flue", "agents", "claude-code", "agent-orchestration", "mcp"],
-	"components": {
-		"skills": "./skills",
-		"agents": "./agents",
-		"commands": "./commands",
-		"hooks": "./hooks/hooks.json",
-		"mcpServers": "./.claude-plugin/mcp.json"
-	}
+	"keywords": ["flue", "agents", "agent-framework", "hooks", "vite", "cloudflare", "mcp", "durable-streams"]
 }

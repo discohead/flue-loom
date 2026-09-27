@@ -1,0 +1,27 @@
+schema_version: "1.1"
+name: http-client
+description: Writes a Node client for a deployed Flue 2 agent using the current conversation protocol.
+tags: [client, http]
+execution:
+  max_turns: 15
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    I deployed a Flue 2 app to https://agents.example.com. Its app.ts mounts my `Support` agent at `/agents/support` behind bearer-token auth (the token is in the SUPPORT_TOKEN environment variable). Write a small TypeScript Node script that sends "Where is order 42?" to the agent in a conversation for ticket 42, waits for the agent to finish, and prints its reply. Show the code in your answer; no files needed.
+graders:
+  - name: uses-sdk
+    type: regex
+    pattern: "createFlueClient"
+  - name: no-legacy-apis
+    type: regex
+    pattern: "client\\.agents\\.|@flue/sdk/client|FlueContext|mode: ?['\"]sync"
+    match: not_contains
+  - name: protocol
+    type: llm
+    weight: 2
+    criteria: |
+      PASS if the code in the answer does all of the following; otherwise FAIL.
+      1. Creates a client with `createFlueClient` from `@flue/sdk`, whose `url` is a conversation URL: the `/agents/support` mount plus an id for ticket 42 (for example `https://agents.example.com/agents/support/ticket-42`).
+      2. Authenticates with the SUPPORT_TOKEN environment variable (the `token` option, or an Authorization bearer header built from `process.env.SUPPORT_TOKEN`) rather than a hard-coded token.
+      3. Sends the question with `send({ message: { kind: 'user', body: 'Where is order 42?' } })`.
+      4. Waits for the reply with `read(...)` (or `wait(...)` and then the conversation history) and prints the reply text.
+expected_outcome: A createFlueClient script that sends to /agents/support/<ticket id> and reads the reply.

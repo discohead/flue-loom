@@ -1,0 +1,11 @@
+{
+	"mcpServers": {
+		"flue": {
+			"command": "node",
+			"args": ["${CLAUDE_PLUGIN_ROOT}/mcp/dist/server.mjs"],
+			"env": {
+				"FLUE_LOOM_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
+			}
+		}
+	}
+}

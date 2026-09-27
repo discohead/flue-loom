@@ -1,0 +1,19 @@
+import { defineSubagent } from '@flue/runtime';
+
+// An ordinary module (no 'use agent'): a delegate is not a registered agent.
+// The function defines the delegate's whole world — its instructions plus any
+// useTool/useSkill/useInstruction/useSubagent it calls. It cannot call
+// useModel, useSandbox, usePersistentState, or event hooks.
+function {{Name}}() {
+	return `{{INSTRUCTIONS}}`;
+}
+
+// Mount from any agent: useSubagent({{exportName}}) — or override per mount:
+// useSubagent({ ...{{exportName}}, model: 'anthropic/claude-haiku-4-5' }).
+export const {{exportName}} = defineSubagent({
+	name: '{{tool_name}}',
+	description: '{{DESCRIPTION}}',
+	agent: {{Name}},
+	// model: 'anthropic/claude-haiku-4-5', // inherits the parent's model when omitted
+	// thinkingLevel: 'low',
+});

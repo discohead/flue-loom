@@ -2,10 +2,13 @@
 	"hooks": {
 		"SessionStart": [
 			{
+				"matcher": "startup|clear|compact",
 				"hooks": [
 					{
 						"type": "command",
-						"command": "${CLAUDE_PLUGIN_ROOT}/scripts/detect-workspace.sh"
+						"command": "node",
+						"args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs"],
+						"timeout": 15
 					}
 				]
 			}
@@ -16,7 +19,9 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "${CLAUDE_PLUGIN_ROOT}/scripts/post-edit-flue.mjs"
+						"command": "node",
+						"args": ["${CLAUDE_PLUGIN_ROOT}/scripts/lint-flue-file.mjs"],
+						"timeout": 30
 					}
 				]
 			}

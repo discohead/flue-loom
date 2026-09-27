@@ -1,0 +1,28 @@
+import { defineTool } from '@flue/runtime';
+import * as v from 'valibot';
+
+const Report = v.object({
+	verdict: v.picklist(['pass', 'fail', 'unclear']),
+	summary: v.string(),
+});
+
+// A bounded, code-driven job the agent can call: stage input in the sandbox,
+// run focused model work in the tool's own scratch conversation, and return
+// validated structured data. Requires the agent to declare useSandbox() if it
+// touches harness.sandbox.
+export const {{exportName}} = defineTool({
+	name: '{{tool_name}}',
+	description: '{{DESCRIPTION}}',
+	input: v.object({ content: v.string() }),
+	harness: true,
+	timeoutMs: 300_000,
+	async run({ harness, data, log }) {
+		await harness.sandbox.writeFile('input.md', data.content);
+		const { data: report, usage } = await harness.prompt(
+			'Review input.md and report whether it meets the requirements.',
+			{ result: Report }, // throws ResultUnavailableError if the model gives up
+		);
+		log.info('{{tool_name}} finished', { verdict: report.verdict, tokens: usage.totalTokens });
+		return { output: report };
+	},
+});

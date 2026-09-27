@@ -1,0 +1,69 @@
+{
+	"manifest_version": "0.3",
+	"name": "flue-loom",
+	"display_name": "Flue Loom",
+	"version": "0.0.0",
+	"description": "Talk to Flue 2 agents over their conversation URLs: send messages, wait for replies, read transcripts, abort work.",
+	"long_description": "Flue Loom connects Claude to agents built with Flue (https://flueframework.com), locally under `vite dev` or deployed. Register agent mounts once (with credentials read from FLUE_* environment variables), then send messages and follow durable conversations by id. Part of the flue-loom Claude Code plugin.",
+	"author": { "name": "Jared McFarland" },
+	"repository": { "type": "git", "url": "https://github.com/discohead/flue-loom" },
+	"homepage": "https://github.com/discohead/flue-loom/tree/main/mcp",
+	"license": "MIT",
+	"keywords": ["flue", "agents", "mcp"],
+	"server": {
+		"type": "node",
+		"entry_point": "server/server.mjs",
+		"mcp_config": {
+			"command": "node",
+			"args": ["${__dirname}/server/server.mjs"],
+			"env": {
+				"FLUE_LOOM_HOME": "${user_config.registry_dir}",
+				"FLUE_LOOM_PROJECT_DIR": "${user_config.project_dir}",
+				"FLUE_LOOM_BASE_URL": "${user_config.base_url}",
+				"FLUE_TOKEN": "${user_config.flue_token}"
+			}
+		}
+	},
+	"user_config": {
+		"registry_dir": {
+			"type": "directory",
+			"title": "Agent registry directory",
+			"description": "Where agents.json (registered agent mounts) lives. Shared with the Claude Code plugin by default.",
+			"default": "${HOME}/.config/flue-loom",
+			"required": false
+		},
+		"project_dir": {
+			"type": "directory",
+			"title": "Local Flue project",
+			"description": "Optional: a Flue project whose app.ts mounts should be discoverable by name.",
+			"required": false
+		},
+		"base_url": {
+			"type": "string",
+			"title": "Local dev server URL",
+			"description": "Where the local project is served (vite dev).",
+			"default": "http://localhost:5173",
+			"required": false
+		},
+		"flue_token": {
+			"type": "string",
+			"title": "Bearer token (FLUE_TOKEN)",
+			"description": "Optional token for protected agent routes. Register agents with token_env \"FLUE_TOKEN\" to send it.",
+			"sensitive": true,
+			"required": false
+		}
+	},
+	"tools": [
+		{ "name": "flue_list_agents", "description": "List registered agents and the local project's app.ts mounts" },
+		{ "name": "flue_add_agent", "description": "Register a named agent mount URL with optional FLUE_* credential variables" },
+		{ "name": "flue_remove_agent", "description": "Remove a registered agent" },
+		{ "name": "flue_send_message", "description": "Send a message or signal to an agent conversation and wait for the reply" },
+		{ "name": "flue_read_reply", "description": "Wait for or fetch the reply to an earlier submission" },
+		{ "name": "flue_get_conversation", "description": "Read a conversation transcript with tool calls and outcomes" },
+		{ "name": "flue_abort", "description": "Abort running and queued work in a conversation" }
+	],
+	"compatibility": {
+		"platforms": ["darwin", "win32", "linux"],
+		"runtimes": { "node": ">=22.0.0" }
+	}
+}

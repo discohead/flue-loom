@@ -1,76 +1,76 @@
 ---
 name: flue-skills
-description: Use when creating workspace skills in .agents/skills/, invoking session.skill(), or understanding the difference between roles and skills.
+description: Use when giving a Flue 2 agent skills (the runtime's SKILL.md expertise, not Claude Code skills) — importing SKILL.md and mounting with useSkill, defineSkill for inline or generated skills, supporting files, workspace skills discovered from .agents/skills, how activate_skill works, and the Agent Skills frontmatter rules Flue validates at build time.
+user-invocable: false
 ---
 
-# Workspace skills
+# Skills for Flue agents
 
-A workspace skill is a structured task you can invoke from a session via `session.skill('name', options)`. Skills are stored at `.agents/skills/<name>/SKILL.md` and discovered at runtime from the session's `cwd`.
+A Flue skill packages a procedure (markdown instructions + optional supporting files) that the agent loads **on demand**: each mounted skill costs one catalog line (name + description) in the system prompt; the model calls the framework's `activate_skill` tool to receive the full instructions as a tool result (the prompt prefix never changes). Flue follows the open [Agent Skills](https://agentskills.io) format.
 
-## File shape
+## Author and import
 
-`.agents/skills/greet/SKILL.md`:
+```
+src/skills/refunds/
+├─ SKILL.md      # frontmatter + instructions
+└─ POLICY.md     # supporting file — read only when needed
+```
 
 ```markdown
 ---
-name: greet
-description: Generate a personalized greeting for a given name. Use when asked to greet someone.
+name: refunds
+description: Process a customer refund request end-to-end. Use when a customer asks for a refund or disputes a charge.
 ---
 
-Given the name provided in the arguments, generate a warm, personalized
-greeting. Keep it to one or two sentences.
+1. Confirm the order id and reason.
+2. Read `POLICY.md` and check eligibility.
+3. If eligible, call `issue_refund`; otherwise explain which rule applies.
 ```
 
-## Where they live
+```ts
+'use agent';
+import { useModel, useSkill } from '@flue/runtime';
+import refunds from '../skills/refunds/SKILL.md'; // static import → SkillReference; packages the whole directory
 
+export function Support() {
+	useModel('anthropic/claude-sonnet-5');
+	useSkill(refunds);
+	return 'Answer support questions. Activate the `refunds` skill before handling any refund.';
+}
 ```
-project-root/
-├── .flue/
-│   └── agents/
-└── .agents/
-    └── skills/
-        └── greet/
-            └── SKILL.md
-```
 
-**Important**: `.agents/skills/` is at the project root, *not* under `.flue/`. Reason: skills are discovered at runtime per-session, not bundled at build time. They live with the project so any session whose `cwd` lands in this project picks them up.
+Frontmatter (validated strictly at build time for imported skills):
+- `name` — lowercase letters/digits/single hyphens, ≤ 64 chars, **must equal the directory name**.
+- `description` — required, ≤ 1024 chars; state what it does **and when to use it** (this is the entire routing decision).
+- Optional: `license`, `compatibility` (≤ 500), `metadata` (string map), `allowed-tools` (accepted, **not enforced** — authorize in your tools).
 
-Discovery happens in `packages/sdk/src/context.ts:discoverLocalSkills` (line 94 in v0.3.5). It walks up from the session's `cwd` looking for `.agents/skills/`.
+Rules: imports must be static (`import('./x/SKILL.md')` is a build error); one mount per name per render; packaging skips `node_modules`/`.git`/`dist`, warns over 1 MB, and **refuses `.env` files, private keys, and symlinks**. Imports from packages work if the package publishes the directory (and exports the `SKILL.md` subpath). Supporting files ship in the bundle and are served read-only at virtual paths (`read_skill_resource`), never copied into the sandbox.
 
-## Invocation
+## Inline skills: `defineSkill`
 
-```typescript
-const session = await agent.session();
+```ts
+import { defineSkill } from '@flue/runtime';
+import runbook from './incident-runbook.md'; // any non-SKILL.md .md import is a plain string
 
-const result = await session.skill('greet', {
-  args: { name: 'Ada' },
-  result: v.object({ greeting: v.string() }),
-  role: 'friendly',     // optional per-call role
-  model: 'anthropic/claude-haiku-4-5',  // optional per-call model
+export const incidents = defineSkill({
+	name: 'incidents',
+	description: 'Run the incident procedure. Use when an outage or security event is reported.',
+	instructions: runbook,
+	files: { 'CHECKLIST.md': checklistText }, // optional supporting files
 });
 ```
 
-Args become available to the skill body (the LLM sees them as part of the system prompt). The skill body itself is markdown — there's no separate executor; the LLM reads it as instructions and responds.
+`useSkill()` also takes an inline definition object. Import attributes (`with { type: 'skill' }`) are gone.
 
-## Skill vs. role
+## Workspace skills
 
-| | Role | Skill |
-|---|---|---|
-| File | `roles/<name>.md` | `.agents/skills/<name>/SKILL.md` |
-| Where | Workspace | Project root |
-| Discovery | Build time | Runtime per-session-cwd |
-| Invoke | `session.prompt('...', { role })` | `session.skill('name', { args })` |
-| Carries args | No | Yes |
-| Effect | Overlays system prompt | Defines a callable task |
+With a sandbox attached, the runtime also discovers `<cwd>/.agents/skills/<name>/SKILL.md` at session start (same catalog, no import). Their instructions are read from disk at activation; malformed ones are skipped with a warning; a name colliding with an imported skill is an error. Use them when the expertise belongs to a checked-out repository or prepared workspace; use imports when it belongs to your application. `AGENTS.md` in the sandbox cwd is also folded into the system prompt.
 
-A skill can use a role: `session.skill('greet', { role: 'friendly' })`.
+## Choosing
 
-## Sub-skills (nested)
+- Always-needed guidance → put it in the returned instructions or `useInstruction()` (a plain `.md` import works).
+- Procedure needed sometimes → skill.
+- Deterministic code → tool. Isolated context or parallel work → subagent (`flue-subagents`).
+- Steer activation from code by naming the skill in instructions or in `harness.prompt()` text; conditional `useSkill()` unlocks a skill mid-conversation without busting the prompt cache.
 
-Skills can have additional files in their directory (e.g., reference docs, sub-workflows). Convention: keep `SKILL.md` as the entry; use sibling files for richer content the LLM can read on demand. Flue itself doesn't enforce a deep structure — just `<name>/SKILL.md` is the contract.
-
-## Related
-
-- `flue-roles` — the call-scoped overlay alternative
-- `flue-composition` — `task()` rediscovers skills per child cwd
-- `flue-workspace-layout` — where everything lives
+flue-loom's edit lint checks imported `SKILL.md` frontmatter and flags secrets in skill directories. Docs: `flue docs read guide/skills`, `reference/agent-api` (SkillDefinition).

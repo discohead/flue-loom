@@ -1,19 +1,21 @@
 {
-	"name": "flue-loom-eval-fixture",
+	"name": "flue-loom-mcp-eval-fixture",
 	"private": true,
 	"type": "module",
-	"description": "Deterministic Flue workspace used by mcp/eval/eval.xml. Agents are pure functions — no LLM calls — so answers are stable.",
 	"scripts": {
-		"dev": "flue dev --target node --port 9999"
+		"dev": "vite dev --port 9999 --strictPort",
+		"check:types": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@flue/sdk": "^0.3.5"
+		"@earendil-works/pi-ai": "^0.83.0",
+		"@flue/runtime": "^2.1.1",
+		"hono": "^4.12.32",
+		"valibot": "^1.5.0"
 	},
 	"devDependencies": {
-		"@flue/cli": "^0.3.5",
-		"typescript": "^5.6.0"
-	},
-	"engines": {
-		"node": ">=22"
+		"@flue/vite": "^2.1.1",
+		"@types/node": "^22.20.4",
+		"typescript": "^7.0.2",
+		"vite": "^8.0.14"
 	}
 }
