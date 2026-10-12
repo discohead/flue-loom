@@ -47,7 +47,7 @@ export default sqlite('./data/flue.db'); // WAL mode; creates dirs; node:sqlite 
 ```
 
 ```bash
-npx flue add database postgres --print   # also: libsql, turso, mysql, mongodb, redis, valkey, supabase
+npx @flue/cli add database postgres --print   # also: libsql, turso, mysql, mongodb, redis, valkey, supabase
 ```
 
 Ecosystem adapters (`@flue/postgres`, `@flue/libsql`, `@flue/mysql`, `@flue/mongodb`, `@flue/redis`) are **bring-your-own-driver**: you wrap your pool as `{ query, transaction, close }` and export `postgres({ … })` from `db.ts`. `migrate()` runs at boot (idempotent; no manual migrations) and a database stamped by an incompatible Flue format version refuses to start. Custom adapters implement `PersistenceAdapter` from `@flue/runtime/adapter` (`connect()` → submission, conversation-stream, and attachment stores) and should pass the contract suites in `@flue/runtime/test-utils`. Standalone `start()` scripts take `db:` directly and ignore `db.ts`.

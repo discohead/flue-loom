@@ -18,7 +18,7 @@ Three layers, cheapest first:
 
 ```bash
 npm install -D vitest@^5
-npm install @earendil-works/pi-ai   # only needed for fauxProvider (match the version @flue/runtime uses)
+npm install @earendil-works/pi-ai   # only for fauxProvider — match the version @flue/runtime uses (`npm ls @earendil-works/pi-ai`; Flue 2.3 → ^1.1)
 ```
 
 ```ts
@@ -57,7 +57,7 @@ const faux = fauxProvider({ api: 'test-calc', provider: 'test-calc', models: [{ 
 setProvider(faux.provider);
 const respond: Parameters<typeof faux.setResponses>[0][number] = (context) => {
 	faux.appendResponses([respond]); // one scripted reply per model call, forever
-	const last = context.messages.at(-1);
+	const last = context.messages.findLast((m) => m.role !== 'system'); // Pi 1.x: instructions arrive as `system` messages
 	if (last?.role === 'toolResult') {
 		const text = last.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
 		return fauxAssistantMessage(fauxText(`The sum is ${JSON.parse(text).sum}.`));
@@ -94,7 +94,7 @@ it('adds with the add tool', async () => {
 });
 ```
 
-Faux responses are consumed one per model call — script exactly the turns you expect, or use a self-re-queuing factory as above. For a production agent, keep the real model in the agent and put a faux-backed copy (or a `setProvider()` override registered before `start()` under the same provider id) in test-only code. Modules that import `SKILL.md` need the Flue build — test those over HTTP. flue-loom's own MCP eval fixture is a full faux-backed app to copy from.
+Faux responses are consumed one per model call — script exactly the turns you expect, or use a self-re-queuing factory as above. Since Pi 1.x (Flue 2.3) the factory's context is the transcript alone: there is no `context.systemPrompt` — the agent's instructions are `role: 'system'` messages (text plus `sections`), and instruction or tool changes can add more mid-conversation, so read the newest non-system message. Signals arrive as user text (`<signal type="…">body</signal>`). For a production agent, keep the real model in the agent and put a faux-backed copy (or a `setProvider()` override registered before `start()` under the same provider id) in test-only code. Modules that import `SKILL.md` need the Flue build — test those over HTTP. flue-loom's own MCP eval fixture is a full faux-backed app to copy from.
 
 ## Live evals
 
@@ -108,7 +108,7 @@ const reply = await conversation.read(admission);
 expect(reply.text).toContain('operational');
 ```
 
-- **vitest-evals**: `npx flue add tooling vitest-evals --print` generates `src/evals/harness.ts` (one SDK conversation per case), configs, and scripts; write cases with `describeEval(...)`, `toolCalls(result)`, and judges (`FactualityJudge`, `ToolCallJudge`, `StructuredOutputJudge`, `createJudge`) with a separate judge harness. Prefer deterministic assertions; add judges only for semantic checks.
+- **vitest-evals**: `npx @flue/cli add tooling vitest-evals --print` generates `src/evals/harness.ts` (one SDK conversation per case), configs, and scripts; write cases with `describeEval(...)`, `toolCalls(result)`, and judges (`FactualityJudge`, `ToolCallJudge`, `StructuredOutputJudge`, `createJudge`) with a separate judge harness. Prefer deterministic assertions; add judges only for semantic checks.
 
 ## CI
 

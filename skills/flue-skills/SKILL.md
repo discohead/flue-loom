@@ -33,7 +33,7 @@ import { useModel, useSkill } from '@flue/runtime';
 import refunds from '../skills/refunds/SKILL.md'; // static import → SkillReference; packages the whole directory
 
 export function Support() {
-	useModel('anthropic/claude-sonnet-5');
+	useModel('anthropic/claude-sonnet-5-5');
 	useSkill(refunds);
 	return 'Answer support questions. Activate the `refunds` skill before handling any refund.';
 }
@@ -44,7 +44,7 @@ Frontmatter (validated strictly at build time for imported skills):
 - `description` — required, ≤ 1024 chars; state what it does **and when to use it** (this is the entire routing decision).
 - Optional: `license`, `compatibility` (≤ 500), `metadata` (string map), `allowed-tools` (accepted, **not enforced** — authorize in your tools).
 
-Rules: imports must be static (`import('./x/SKILL.md')` is a build error); one mount per name per render; packaging skips `node_modules`/`.git`/`dist`, warns over 1 MB, and **refuses `.env` files, private keys, and symlinks**. Imports from packages work if the package publishes the directory (and exports the `SKILL.md` subpath). Supporting files ship in the bundle and are served read-only at virtual paths (`read_skill_resource`), never copied into the sandbox.
+Rules: imports must be static (`import('./x/SKILL.md')` is a build error); one mount per name per render; packaging skips `node_modules`/`.git`/`dist`, warns over 1 MB, and **refuses `.env` files, private keys, and symlinks**. Imports from packages work if the package publishes the directory (and exports the `SKILL.md` subpath); so do Node subpath imports from `package.json` `imports` (`import refunds from '#src/skills/refunds/SKILL.md'`, Flue ≥ 2.2). Supporting files ship in the bundle and are served read-only at virtual paths (`read_skill_resource`), never copied into the sandbox.
 
 ## Inline skills: `defineSkill`
 

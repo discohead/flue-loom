@@ -130,6 +130,21 @@ describe('flue-models.mjs', { skip: fixtureInstalled ? false : 'mcp/eval/fixture
 		assert.equal(typo.code, 1);
 		assert.match(typo.stdout + typo.stderr, /anthropic\/claude-haiku-4-5/);
 	});
+
+	it('knows the models the skills recommend', () => {
+		for (const spec of ['anthropic/claude-haiku-5-5', 'anthropic/claude-sonnet-5-5', 'anthropic/claude-opus-5-5', 'anthropic/claude-fable-5-1']) {
+			assert.equal(run('flue-models.mjs', ['--check', spec, '--project', fixture]).code, 0, spec);
+		}
+	});
+
+	it('lists thinking levels and names version-separator fallbacks', () => {
+		const details = run('flue-models.mjs', ['anthropic/claude-', '--details', '--project', fixture]);
+		assert.match(details.stdout, /^anthropic\/claude-sonnet-5-5\t.* thinking=low,medium,high,xhigh,max$/m);
+		assert.match(details.stdout, /^anthropic\/claude-haiku-4-5\t.* thinking=off,minimal,low,medium,high$/m);
+		const dotted = run('flue-models.mjs', ['--check', 'anthropic/claude-sonnet-5.5', '--project', fixture]);
+		assert.equal(dotted.code, 1);
+		assert.match(dotted.stderr, /resolves it to anthropic\/claude-sonnet-5-5 with a warning/);
+	});
 });
 
 describe('flue-talk.mjs', { skip: fixtureInstalled ? false : 'mcp/eval/fixture not installed' }, () => {
@@ -186,6 +201,12 @@ describe('flue-talk.mjs', { skip: fixtureInstalled ? false : 'mcp/eval/fixture n
 		assert.equal(read.stdout.trim(), 'waited 300 ms');
 		const history = await talk([`${base}/agents/slow/talk-3`, '--history']);
 		assert.match(history.stdout, /waited 300 ms/);
+		assert.match(history.stdout, /^assistant \[assistant\]  \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z$/m);
+		await talk([`${base}/agents/slow/talk-3`, '-m', 'wait 10']);
+		const newest = await talk([`${base}/agents/slow/talk-3`, '--history', '--limit', '1']);
+		assert.match(newest.stdout, /newest 1 messages; earlier ones not shown/);
+		assert.match(newest.stdout, /waited 10 ms/);
+		assert.doesNotMatch(newest.stdout, /waited 300 ms/);
 	});
 	it('fails clearly on an unmounted path and a failing agent', async () => {
 		const missing = await talk([`${base}/nowhere/x`, '-m', 'hi']);

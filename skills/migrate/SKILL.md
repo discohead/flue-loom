@@ -33,7 +33,7 @@ Stop here with `--plan-only`.
 ## 3. Convert incrementally
 
 1. Toolchain: follow the procedure's step 3 (scratch `flue init`, merge config and dependencies, scripts → `vite dev` / `vite build`). Install.
-2. One agent end to end first: convert it with `mapping.md` (or delegate to `flue-loom:flue-author` with the old file, the mapping, and the plan row), mount or wire it, then verify — lint clean, `npx tsc --noEmit`, `npx flue run <module> -m "…"`.
+2. One agent end to end first: convert it with `mapping.md` (or delegate to `flue-loom:flue-author` with the old file, the mapping, and the plan row), mount or wire it, then verify — lint clean, `npx tsc --noEmit`, `npx @flue/cli run <module> -m "…"`.
 3. Then the rest, one at a time, verifying each. Roles → subagents or `useInstruction`; `Type.Object` tools → valibot `defineTool`; triggers → mounts/dispatch/schedules; custom sandboxes → `useSandbox` factories.
 4. Clients: rewrite callers for the conversation protocol with `@flue/sdk` (`flue-client`).
 5. Remove legacy dependencies and dead files only after everything passes.

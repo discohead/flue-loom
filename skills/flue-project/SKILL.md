@@ -72,7 +72,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({ plugins: [flue(), cloudflare({ config: flueWorkerConfig() })] });
 ```
 
-Some older doc pages show bare `cloudflare()`; at 2.1.1 that fails config resolution. `flue()` accepts the same fields as `flue.config.ts` inline (inline wins per field). On Node, `vite build` forces SSR output (`dist/server.mjs` + `dist/app.mjs`, target node22) and externalizes your `package.json` dependencies.
+Some older doc pages show bare `cloudflare()`; that fails config resolution (still at 2.3.0). `flue()` accepts the same fields as `flue.config.ts` inline (inline wins per field). On Node, `vite build` forces SSR output (`dist/server.mjs` + `dist/app.mjs`, target node22) and externalizes your `package.json` dependencies.
 
 ## `app.ts` (required for `vite dev`/`vite build`)
 

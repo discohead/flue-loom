@@ -8,7 +8,7 @@ user-invocable: false
 
 Each agent becomes one **Durable Object class** (SQLite-backed) holding its conversations; `app.ts` becomes the Worker's fetch handler. Durable admission, recovery, and ordering are built in (no `db.ts` — it's a build error here).
 
-## Wiring (verified at 2.1.1)
+## Wiring (verified at 2.3.0)
 
 ```ts
 // vite.config.ts — flue() first; cloudflare() MUST receive flueWorkerConfig()
@@ -18,7 +18,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({ plugins: [flue(), cloudflare({ config: flueWorkerConfig() })] });
 ```
 
-Bare `cloudflare()` (shown on some older doc pages) fails: "The Cloudflare plugin is not receiving Flue's Worker configuration". `package.json` needs `"type": "module"`; devDeps `@cloudflare/vite-plugin`, `wrangler`, `vite`, `@flue/vite`. Flue 2.1.1 generates no `.flue-vite*` files — the customizer injects `main`, the per-agent DO bindings, and `nodejs_compat`, and validates `compatibility_date ≥ 2026-04-01`. Gitignore `dist/` and `.wrangler/`.
+Bare `cloudflare()` (shown on some older doc pages) fails: "The Cloudflare plugin is not receiving Flue's Worker configuration". `package.json` needs `"type": "module"`; devDeps `@cloudflare/vite-plugin`, `wrangler`, `vite`, `@flue/vite`. Flue 2.3.0 generates no `.flue-vite*` files — the customizer injects `main`, the per-agent DO bindings, and `nodejs_compat`, and validates `compatibility_date ≥ 2026-04-01`. Gitignore `dist/` and `.wrangler/`.
 
 ## Identity → Durable Object names → migrations (you own these)
 
@@ -36,6 +36,7 @@ Bare `cloudflare()` (shown on some older doc pages) fails: "The Cloudflare plugi
 	"compatibility_date": "2026-06-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true, "traces": { "enabled": true } },
+	// "ai": { "binding": "AI" }, // keyless cloudflare/… models; `flue init` ≥ 2.3 scaffolds this line commented out
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["FlueSupportAgent"] },
 		{ "tag": "v2", "new_sqlite_classes": ["FlueIssueTriageAgent"] }, // adding an agent = module + mount + migration
@@ -82,7 +83,7 @@ Declare your own DO bindings/migrations/containers in `wrangler.jsonc`; Cron Tri
 ```ts
 'use agent';
 import { extend } from '@flue/runtime/cloudflare';
-export function Heartbeat() { useModel('anthropic/claude-sonnet-5'); return '…'; }
+export function Heartbeat() { useModel('anthropic/claude-sonnet-5-5'); return '…'; }
 export const cloudflare = extend({
 	base: (Base) => class extends Base { async onStart() { await this.scheduleEvery(60, 'heartbeat'); } async heartbeat() { /* … */ } },
 	wrap: (Final) => Sentry.instrumentDurableObjectWithSentry((env) => ({ dsn: env.SENTRY_DSN }), Final),
@@ -93,8 +94,8 @@ Applies to every agent class in that module. Don't override `fetch()`, `onReques
 
 ## Models, sandboxes, calling agents
 
-- Workers AI: `useModel('cloudflare/@cf/moonshotai/kimi-k2.6')` + `"ai": { "binding": "AI" }` — no API key, AI Gateway on by default; customize via `cloudflareBindingProvider()` (`flue-models`). With `flue({ providers: [...] })`, include `'cloudflare'`.
-- Virtual sandbox (`bash(...)`) works as-is. Durable SQLite workspace: `npx flue add sandbox cloudflare-computer --print`. Full Linux containers: `@cloudflare/sandbox` + `useSandbox(cloudflareSandbox(getSandbox(env.Sandbox, id)))` (`import { env } from 'cloudflare:workers'`), Sandbox DO + `containers` + migration + Dockerfile (`FROM docker.io/cloudflare/sandbox:<version matching the package>`); containers need Workers Paid and Docker for local dev. Prefer outbound Workers for secret injection over env vars in the container.
+- Workers AI: `useModel('cloudflare/@cf/moonshotai/kimi-k2.6')` + `"ai": { "binding": "AI" }` (uncomment the scaffolded line) — no API key, billed to your Cloudflare account even from local `vite dev`, AI Gateway on by default; customize via `cloudflareBindingProvider()` (`flue-models`). With `flue({ providers: [...] })`, include `'cloudflare'`.
+- Virtual sandbox (`bash(...)`) works as-is. Durable SQLite workspace: `npx @flue/cli add sandbox cloudflare-computer --print`. Full Linux containers: `@cloudflare/sandbox` + `useSandbox(cloudflareSandbox(getSandbox(env.Sandbox, id)))` (`import { env } from 'cloudflare:workers'`), Sandbox DO + `containers` + migration + Dockerfile (`FROM docker.io/cloudflare/sandbox:<version matching the package>`); containers need Workers Paid and Docker for local dev. Prefer outbound Workers for secret injection over env vars in the container.
 - Private agents: reach another Worker's agents through a service binding — `createFlueClient({ url: 'https://agent.internal/agents/support/t1', fetch: (i, init) => env.AGENT_APP.fetch(new Request(i, init)) })`.
 - `createMcpConnection()` at module top level is forbidden on Workers (no global-scope I/O) — use `useMcpConnection()`.
 

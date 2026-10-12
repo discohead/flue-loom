@@ -32,7 +32,7 @@ import { sqlite } from '@flue/runtime/node';
 export default sqlite('./data/flue.db'); // single host; mount a persistent volume
 ```
 
-For host loss or multiple replicas use an ecosystem adapter (`npx flue add database postgres --print`). **One live owner per conversation** — shared databases enable replacement, not active-active: route each conversation id to one replica (sticky routing) and avoid overlapping owners during rollouts. A replacement recovers interrupted work at startup and via lease scans. See `flue-durability`.
+For host loss or multiple replicas use an ecosystem adapter (`npx @flue/cli add database postgres --print`). **One live owner per conversation** — shared databases enable replacement, not active-active: route each conversation id to one replica (sticky routing) and avoid overlapping owners during rollouts. A replacement recovers interrupted work at startup and via lease scans. See `flue-durability`.
 
 ## `local()` sandbox (Node only)
 

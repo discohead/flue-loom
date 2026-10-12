@@ -28,7 +28,7 @@ if (values.help) {
 
   filter          substring match, e.g. "anthropic/" or "sonnet"
   --check <spec>  exit 0 if the specifier exists in the installed catalog, else 1 (with suggestions)
-  --details       include context window, output limit, reasoning, and input modalities
+  --details       include context window, output limit, image input, and supported thinking levels
   --json          machine-readable output`);
 	process.exit(0);
 }
@@ -75,6 +75,11 @@ if (values.check) {
 	} else {
 		console.error(`✗ ${values.check} is not in the ${catalog.source} catalog.`);
 		if (!catalog.providers.includes(provider)) console.error(`  Unknown provider "${provider}". Providers: ${catalog.providers.join(', ')}`);
+		// Flue ≥ 2.2.1 resolves an id that differs from exactly one catalog id only in
+		// `-`/`.` version separators, with a one-time warning to update the specifier.
+		const separators = (modelId) => modelId.replace(/(?<=\d)[-.](?=\d)/g, '.');
+		const aliases = catalog.models.filter((model) => model.provider === provider && model.id !== id && separators(model.id) === separators(id));
+		if (/\d[-.]\d/.test(id) && aliases.length === 1) console.error(`  Flue ≥ 2.2.1 resolves it to ${aliases[0].specifier} with a warning — write that instead.`);
 		if (suggestions.length > 0) console.error(`  Did you mean: ${suggestions.join(', ')}`);
 		console.error('  Custom or local models need a provider registered with setProvider() — see the flue-models skill.');
 	}
@@ -90,7 +95,7 @@ if (values.json) {
 			console.log(model.specifier);
 			continue;
 		}
-		const flags = [model.reasoning ? 'reasoning' : '', (model.input ?? []).includes('image') ? 'image' : ''].filter(Boolean).join(' ');
+		const flags = [(model.input ?? []).includes('image') ? 'image' : '', model.reasoning ? `thinking=${model.thinkingLevels.join(',')}` : ''].filter(Boolean).join(' ');
 		console.log(`${model.specifier}\tctx=${model.contextWindow} out=${model.maxTokens}${flags ? ` ${flags}` : ''}`);
 	}
 }
@@ -107,6 +112,19 @@ function editDistance(a, b) {
 		}
 	}
 	return row[b.length];
+}
+
+// The useModel thinkingLevel values a model accepts — Pi's getSupportedThinkingLevels():
+// a null thinkingLevelMap entry marks a level unsupported; xhigh and max are opt-in.
+// Flue 2.3 passes the level through unclamped, and on models that can't disable
+// thinking, 'off' leaves the provider default effort in place.
+function thinkingLevels(model) {
+	if (!model.reasoning) return ['off'];
+	return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].filter((level) => {
+		const mapped = model.thinkingLevelMap?.[level];
+		if (mapped === null) return false;
+		return level === 'xhigh' || level === 'max' ? mapped !== undefined : true;
+	});
 }
 
 async function loadInstalledCatalog(projectRoot) {
@@ -135,6 +153,7 @@ async function loadInstalledCatalog(projectRoot) {
 				id: model.id,
 				name: model.name,
 				reasoning: model.reasoning,
+				thinkingLevels: thinkingLevels(model),
 				input: model.input,
 				contextWindow: model.contextWindow,
 				maxTokens: model.maxTokens,

@@ -11,7 +11,7 @@ No monorepo machinery. Two deliverables:
 
 ## Flue version pin
 
-Verified against Flue **2.1.1** — `TESTED_FLUE_VERSION` in `scripts/lib/flue-project.mjs`. When Flue moves:
+Verified against Flue **2.3.0** — `TESTED_FLUE_VERSION` in `scripts/lib/flue-project.mjs`. When Flue moves:
 
 - Read the upstream CHANGELOG and the docs shipped in `@flue/cli` (`node_modules/@flue/cli/docs/`). Skills cite doc paths (`flue docs read guide/tools`), not source line numbers.
 - Re-verify the templates: instantiate every `templates/*.tmpl` into a scratch Flue project and run `tsc --noEmit`, `vitest run`, `vite build`, and the lint.

@@ -93,7 +93,9 @@ function describeProject(root, from) {
 	const appFile = discoverEntry(sourceRoot, 'app');
 	const dbFile = discoverEntry(sourceRoot, 'db');
 	const pm = packageManager(root);
-	const exec = { pnpm: 'pnpm exec', yarn: 'yarn', bun: 'bunx', npm: 'npx' }[pm];
+	// The scoped package name keeps npx/bunx from fetching the unrelated `flue` package
+	// when @flue/cli isn't installed; pnpm exec and yarn only run local binaries.
+	const cli = { pnpm: 'pnpm exec flue', yarn: 'yarn flue', bun: 'bunx @flue/cli', npm: 'npx @flue/cli' }[pm];
 
 	const installed = Object.entries(versions)
 		.map(([name, v]) => `${name} ${v.installed ?? `${v.declared} (not installed)`}`)
@@ -148,7 +150,7 @@ function describeProject(root, from) {
 		lines.push(`Installed @flue/runtime ${runtimeVersion} is newer than the ${TESTED_FLUE_VERSION} flue-loom was verified against — where a skill and the installed docs disagree, trust the docs.`);
 	}
 	lines.push(
-		`Version-matched docs: \`${exec} flue docs search <query>\` then \`${exec} flue docs read <path>\` (or Read/Grep node_modules/@flue/cli/docs/). Blueprints: \`${exec} flue add\`.`,
+		`Version-matched docs: \`${cli} docs search <query>\` then \`${cli} docs read <path>\` (or Read/Grep node_modules/@flue/cli/docs/). Blueprints: \`${cli} add\`.`,
 	);
 	return lines.join('\n');
 }

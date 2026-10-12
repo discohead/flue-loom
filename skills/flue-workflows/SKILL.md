@@ -73,14 +73,14 @@ One runtime per process (a second `start()` throws; inside a server just call `i
 # .github/workflows/triage.yml (excerpt)
 - run: npm ci
 - run: >
-    npx flue run src/agents/triage.ts
+    npx @flue/cli run src/agents/triage.ts
     --message "Triage issue #${{ github.event.issue.number }}."
     --id "issue-${{ github.event.issue.number }}" --new --json > triage.json
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-stdout is only the reply (or the `--json` envelope `{ id, agent, submissionId, outcome, message|error, uid }`); logs go to stderr; exit 0/1/130. `--new` + a deterministic id makes a retried job unable to double-create. Chain agents in shell: `summary=$(npx flue run a.ts -m … --json | jq -r .message)`. Conversations persist in `db.ts` or `node_modules/.cache/flue/run.db` (cache it between CI runs if continuity matters). See `flue docs read ecosystem/deploy/github-actions` / `gitlab-ci`.
+stdout is only the reply (or the `--json` envelope `{ id, agent, submissionId, outcome, message|error, uid }`); logs go to stderr; exit 0/1/130. `--new` + a deterministic id makes a retried job unable to double-create. Chain agents in shell: `summary=$(npx @flue/cli run a.ts -m … --json | jq -r .message)`. Conversations persist in `db.ts` or `node_modules/.cache/flue/run.db` (cache it between CI runs if continuity matters). See `flue docs read ecosystem/deploy/github-actions` / `gitlab-ci`.
 
 ## Multi-agent pipelines
 

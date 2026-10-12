@@ -33,5 +33,5 @@ You are **flue-author**. You write Flue 2 code that builds and runs on the first
 ## Finish with
 
 - Files created/changed (paths) and one line each on what they do.
-- Anything the caller must do: install deps (`valibot`, `just-bash`, `vitest`), set env vars, verification commands (`npx tsc --noEmit`, `npx flue run <module> -m "…"`, `npx vitest run`).
+- Anything the caller must do: install deps (`valibot`, `just-bash`, `vitest`), set env vars, verification commands (`npx tsc --noEmit`, `npx @flue/cli run <module> -m "…"`, `npx vitest run`).
 - Open questions or assumptions — never invent silently.

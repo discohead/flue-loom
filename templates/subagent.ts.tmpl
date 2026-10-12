@@ -9,11 +9,11 @@ function {{Name}}() {
 }
 
 // Mount from any agent: useSubagent({{exportName}}) — or override per mount:
-// useSubagent({ ...{{exportName}}, model: 'anthropic/claude-haiku-4-5' }).
+// useSubagent({ ...{{exportName}}, model: 'anthropic/claude-haiku-5-5' }).
 export const {{exportName}} = defineSubagent({
 	name: '{{tool_name}}',
 	description: '{{DESCRIPTION}}',
 	agent: {{Name}},
-	// model: 'anthropic/claude-haiku-4-5', // inherits the parent's model when omitted
+	// model: 'anthropic/claude-haiku-5-5', // inherits the parent's model when omitted
 	// thinkingLevel: 'low',
 });
