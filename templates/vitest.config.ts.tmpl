@@ -1,0 +1,10 @@
+import { defineConfig } from 'vitest/config';
+
+// A dedicated Vitest config keeps vite.config.ts (and its flue() plugin) out
+// of the test pipeline: tests import agent modules directly and boot the
+// runtime themselves with start() from '@flue/runtime/node'.
+export default defineConfig({
+	test: {
+		include: ['src/**/*.test.ts'],
+	},
+});

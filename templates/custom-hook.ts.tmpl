@@ -1,0 +1,26 @@
+import { useInstruction, usePersistentState, useTool } from '@flue/runtime';
+import * as v from 'valibot';
+
+// A custom hook bundles one capability — tools, state, and the instructions
+// that explain them — so any agent can adopt it with one call:
+//   export function Support() { useModel('…'); {{hookName}}(); return '…'; }
+// Hooks called here record exactly as if the agent body called them.
+export function {{hookName}}() {
+	const [notes, setNotes] = usePersistentState<string[]>('{{name}}:notes', []);
+
+	useTool({
+		name: 'remember_note',
+		description: 'Save a short fact about this conversation for later turns.',
+		input: v.object({ note: v.pipe(v.string(), v.maxLength(280)) }),
+		async run({ data }) {
+			setNotes((previous) => [...previous, data.note].slice(-20));
+			return 'Saved.';
+		},
+	});
+
+	useInstruction(
+		notes.length > 0
+			? `Notes you saved earlier:\n${notes.map((note) => `- ${note}`).join('\n')}`
+			: 'Use remember_note to save facts worth keeping across turns.',
+	);
+}

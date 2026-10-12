@@ -1,0 +1,42 @@
+schema_version: "1.1"
+name: new-agent
+description: Adds a Flue 2 agent with a validated tool and mounts it over HTTP (run with --scaffold).
+tags: [authoring, agents, tools]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 30
+  timeout_seconds: 600
+  allowed_tools: [Read, Glob, Grep, Skill, Write, Edit]
+  prompt: |
+    This workspace is a Flue project. Add an agent named `Weather` that answers weather questions using a `get_forecast` tool. The tool takes a city name and returns a canned forecast object (for example `{ city, forecast: 'sunny', highC: 24 }`) — no real API. Use `anthropic/claude-haiku-4-5` as the model. Make the agent reachable over HTTP at `/agents/weather`.
+graders:
+  - name: agent-file
+    type: file_exists
+    path: "src/agents/weather.ts"
+  - name: directive-first
+    type: regex
+    target: { source: file, path: src/agents/weather.ts }
+    pattern: "^\\s*(?:(?://[^\\n]*|/\\*[\\s\\S]*?\\*/)\\s*)*['\"]use agent['\"]"
+  - name: agent-export
+    type: regex
+    target: { source: file, path: src/agents/weather.ts }
+    pattern: "export\\s+function\\s+Weather\\s*\\("
+  - name: model
+    type: regex
+    target: { source: file, path: src/agents/weather.ts }
+    pattern: "useModel\\(\\s*['\"]anthropic/claude-haiku-4-5['\"]\\s*\\)"
+  - name: mounted
+    type: regex
+    target: { source: file, path: src/app.ts }
+    pattern: "route\\(\\s*['\"]/agents/weather['\"]\\s*,\\s*createAgentRouter\\(\\s*Weather\\s*\\)"
+  - name: flue2-agent
+    type: llm
+    focus: { source: file, path: src/agents/weather.ts }
+    weight: 2
+    criteria: |
+      This is the agent module the run produced. PASS if all of the following hold; otherwise FAIL.
+      1. `'use agent';` is the first statement, and `Weather` is an exported, synchronous (not async) function that calls `useModel(...)` and returns instruction text.
+      2. `Weather` mounts a `get_forecast` tool with `useTool(...)` — the tool may be defined in this file or imported from another module.
+      3. It uses only current Flue 2 APIs from `@flue/runtime` — no `FlueContext`, `export const triggers`, `Type.Object`, `execute:`, `@flue/sdk/client`, or `defineAgent`.
+expected_outcome: src/agents/weather.ts with a 'use agent' Weather agent and a valibot get_forecast tool, mounted in app.ts.

@@ -1,42 +1,42 @@
 <evaluation>
    <qa_pair>
-      <question>Connect to the Flue HTTP endpoint at http://localhost:9999/. Among the registered agents, count how many have a scheduled (cron) trigger configured. Return the count as a number.</question>
-      <answer>3</answer>
+      <question>A Flue project is running locally with the MCP server pointed at it. Ask its calc agent to add 1234 and 4321. What sum does the agent report? Answer with the number only.</question>
+      <answer>5555</answer>
    </qa_pair>
    <qa_pair>
-      <question>The Flue endpoint at http://localhost:9999/ has multiple agents with cron schedules. Identify the agent whose cron expression fires once per day at 9:00 AM (the cron string "0 9 * * *"). Return only the exact agent name.</question>
-      <answer>daily-summary</answer>
+      <question>Start a new conversation with the counter agent (let the tool generate the conversation id) and send it four messages in that same conversation. What count does the fourth reply report? Answer with the number only.</question>
+      <answer>4</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "add-numbers" at http://localhost:9999/ in synchronous mode with the JSON payload {"a": 17, "b": 25}. The structured response contains the agent's return at the "result" field. Return only the value of result.sum as a number.</question>
-      <answer>42</answer>
+      <question>Open a new conversation with the profile agent for a member named Grace on the team plan, passing the member as the conversation's creation data (fields name and plan). Which plan does the agent's greeting mention? Answer with the plan name only.</question>
+      <answer>team</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "count-words" at http://localhost:9999/ in synchronous mode with the payload {"text": "flue is a framework for building agents"}. Return only the value of result.count as a number.</question>
-      <answer>7</answer>
+      <question>Ask the slow agent to wait 5000 milliseconds, but wait at most 1 second for its reply. Then retrieve the reply to that same submission. How many milliseconds does the final reply say the agent waited? Answer with the number only.</question>
+      <answer>5000</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "version" at http://localhost:9999/ in synchronous mode with no payload. The agent returns metadata about the build. Return only the value of result.commit (a short hexadecimal string) exactly as it appears.</question>
-      <answer>a4b8c2d</answer>
+      <question>Deliver a structured signal (not a user message) of type "release" with the attribute channel set to "beta" and the body "v3" to the inbox agent. Which channel does its acknowledgement report? Answer with the channel value only.</question>
+      <answer>beta</answer>
    </qa_pair>
    <qa_pair>
-      <question>List all agents registered at http://localhost:9999/. Sort the agent names alphabetically (case-insensitive). Return only the LAST agent name in that sorted list.</question>
-      <answer>version</answer>
+      <question>Send any message to the broken agent. Its submission fails. What error type identifier does Flue report for the failure? Answer with the identifier only.</question>
+      <answer>operation_failed</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "reverse" at http://localhost:9999/ in synchronous mode with the payload {"s": "evaluation"}. Return only the value of result.reversed exactly.</question>
-      <answer>noitaulave</answer>
+      <question>The vault agent is protected by bearer authentication; its token is available to the MCP server in the FLUE_EVAL_TOKEN environment variable. Register the vault agent's mount under a name of your choice with that token variable, then ask it for the secret word. What is the secret word? Answer with the word only, in lowercase.</question>
+      <answer>marmalade</answer>
    </qa_pair>
    <qa_pair>
-      <question>List all agents at http://localhost:9999/. Count those whose name starts with the letter "c" (case-insensitive). Return only the count as a number.</question>
-      <answer>2</answer>
+      <question>How many agents does the local Flue project mount over HTTP in its app.ts? Answer with the number only.</question>
+      <answer>8</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "echo" at http://localhost:9999/ in webhook mode (fire-and-forget) with the payload {"x": true}. The structured response from the tool includes the HTTP status code that the Flue endpoint returned. Return only that status code as a number.</question>
-      <answer>202</answer>
+      <question>What URL path is the vault agent mounted at in the local Flue project? Answer with the path only, starting with a slash.</question>
+      <answer>/secure/vault</answer>
    </qa_pair>
    <qa_pair>
-      <question>Invoke the agent named "constant-pi" at http://localhost:9999/ in synchronous mode. The agent returns a fixed numeric value as a string in result.value. Return that value exactly.</question>
-      <answer>3.14159265358979</answer>
+      <question>Send the message "hello" to the echo agent in the conversation "eval-idem" twice, both times with the idempotency key "greeting-1". Then read that conversation's transcript. How many user messages does it contain? Answer with the number only.</question>
+      <answer>1</answer>
    </qa_pair>
 </evaluation>

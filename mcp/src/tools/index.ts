@@ -1,732 +1,486 @@
+import type { McpServer } from '@modelcontextprotocol/server';
+import type { AgentSendResult, DeliveredMessage, FlueConversationSnapshot } from '@flue/sdk';
+import { FlueApiError } from '@flue/sdk';
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { HttpError, httpJson, mapFlueError } from '../http.ts';
-import { postSse, parseSse } from '../sse.ts';
+import { DEFAULT_HISTORY_MESSAGES, DEFAULT_WAIT_SECONDS, MAX_HISTORY_MESSAGES, MAX_WAIT_SECONDS } from '../constants.ts';
+import { clientFor, describeError, progressReporter, waitForReply } from '../flue.ts';
 import {
-	addEndpoint,
-	listEndpoints,
-	removeEndpoint,
-	resolveEndpoint,
-} from '../registry.ts';
-import {
-	formatAgentsMarkdown,
-	formatEndpointsMarkdown,
-	formatInvokeMarkdown,
-	formatStreamMarkdown,
+	type HistoryMessage,
+	type ReplyOutput,
+	agentsMarkdown,
+	historyMarkdown,
+	projectMessage,
+	projectSettlement,
+	replyMarkdown,
+	truncate,
 } from '../format.ts';
-import {
-	CHARACTER_LIMIT,
-	DEFAULT_STREAM_TIMEOUT_MS,
-	MAX_EVENTS,
-} from '../constants.ts';
+import { discoverProject } from '../project.ts';
+import { listRegisteredAgents, registryPath, removeAgent, upsertAgent } from '../registry.ts';
+import { CREDENTIAL_ENV_PATTERN, type ResolvedTarget, resolveTarget } from '../target.ts';
 
-// ─── Shared output sub-schemas ───────────────────────────────────────────────
+// ─── Shared schema pieces ───────────────────────────────────────────────────
 
-const AgentSummary = z
-	.object({
-		name: z.string(),
-		triggers: z.unknown().optional(),
-	})
-	.passthrough();
+const targetFields = {
+	agent: z
+		.string()
+		.optional()
+		.describe('Agent name: one registered with flue_add_agent, or a mount discovered in the local project (see flue_list_agents).'),
+	url: z
+		.string()
+		.optional()
+		.describe('Agent mount URL instead of a name, e.g. "https://api.example.com/agents/support", or "/agents/support" relative to the local dev server (FLUE_LOOM_BASE_URL, default http://localhost:5173). Do not include the conversation id.'),
+	conversation_url: z
+		.string()
+		.optional()
+		.describe('Full conversation URL (mount + id), e.g. "http://localhost:5173/agents/support/ticket-42" — an alternative to agent/url + conversation_id.'),
+};
 
-const EndpointEntry = z.object({
+const conversationId = z
+	.string()
+	.min(1)
+	.max(512)
+	.describe('Conversation id: the durable conversation within the agent. Reuse it to continue with full context; a new id starts fresh.');
+
+const responseFormat = z
+	.enum(['markdown', 'json'])
+	.optional()
+	.describe('Text form of the result: "markdown" (default, readable) or "json" (the structured output). Structured output is returned either way.');
+
+const waitSeconds = z
+	.number()
+	.int()
+	.min(1)
+	.max(MAX_WAIT_SECONDS)
+	.optional()
+	.describe(`How long to wait for the agent to finish before returning "pending" (default ${DEFAULT_WAIT_SECONDS}). The agent keeps working either way.`);
+
+const activity = z.array(
+	z.object({
+		tool: z.string(),
+		tool_call_id: z.string(),
+		status: z.enum(['running', 'ok', 'error']),
+		error: z.string().optional(),
+		duration_ms: z.number().optional(),
+	}),
+);
+
+const replyOutput = z.object({
+	agent: z.string(),
+	conversation_url: z.string(),
+	conversation_id: z.string(),
+	submission_id: z.string(),
+	outcome: z.enum(['completed', 'pending']).describe('"completed": the reply is here. "pending": still running — use flue_read_reply.'),
+	uid: z.string().optional(),
+	deduplicated: z.boolean().optional(),
+	text: z.string().optional(),
+	data: z.record(z.string(), z.array(z.unknown())).optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+	answered_by_submission_id: z.string().optional(),
+	activity,
+	notes: z.array(z.string()).optional(),
+	truncated: z.boolean().optional(),
+});
+
+const registeredOutput = z.object({
 	name: z.string(),
 	url: z.string(),
+	description: z.string().optional(),
+	token_env: z.string().optional(),
+	headers: z.record(z.string(), z.string()).optional(),
+	header_env: z.record(z.string(), z.string()).optional(),
+	credentials: z.string(),
 });
 
-const RegistryShape = z.object({
-	endpoints: z.array(EndpointEntry),
-	defaultName: z.string().optional(),
-});
+// ─── Result helpers ─────────────────────────────────────────────────────────
 
-const ResponseFormat = z
-	.enum(['json', 'markdown'])
-	.optional()
-	.describe(
-		'Format of the text content. "json" (default) returns a stringified JSON envelope; "markdown" returns a human-readable formatted block. structuredContent is identical regardless.',
-	);
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-type ToolReturn = {
+type ToolResult = {
 	content: Array<{ type: 'text'; text: string }>;
-	structuredContent: Record<string, unknown>;
+	structuredContent?: Record<string, unknown>;
 	isError?: boolean;
 };
 
-function jsonText(output: Record<string, unknown>): ToolReturn {
+function ok(structured: object, markdown: string, format: 'markdown' | 'json' = 'markdown'): ToolResult {
+	const text = format === 'json' ? JSON.stringify(structured, null, 2) : markdown;
+	return { content: [{ type: 'text', text: truncate(text).text }], structuredContent: structured as Record<string, unknown> };
+}
+
+// Errors carry no structuredContent: it would have to satisfy outputSchema, and
+// strict clients reject a non-conforming object even on isError results.
+function fail(err: unknown, target?: ResolvedTarget): ToolResult {
+	const { message, details } = describeError(err, target);
+	const text = Object.keys(details).length > 0 ? `${message}\n\n${JSON.stringify(details, null, 2)}` : message;
+	return { content: [{ type: 'text', text }], isError: true };
+}
+
+function credentialsLabel(agent: { token_env?: string; header_env?: Record<string, string> }): string {
+	const variables = [...(agent.token_env ? [agent.token_env] : []), ...Object.values(agent.header_env ?? {})];
+	if (variables.length === 0) return 'none';
+	return variables.map((variable) => `${variable} ${process.env[variable] ? 'set' : 'NOT SET'}`).join(', ');
+}
+
+function replyFrom(
+	target: ResolvedTarget,
+	admission: Pick<AgentSendResult, 'submissionId'> & Partial<AgentSendResult>,
+): Omit<ReplyOutput, 'outcome' | 'activity'> {
 	return {
-		content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
-		structuredContent: output,
+		agent: target.label,
+		conversation_url: target.conversationUrl,
+		conversation_id: target.conversationId,
+		submission_id: admission.submissionId,
+		...(admission.uid ? { uid: admission.uid } : {}),
+		...(admission.deduplicated ? { deduplicated: true } : {}),
+		...(target.notes.length > 0 ? { notes: target.notes } : {}),
 	};
 }
 
-function errorText(message: string, structured: Record<string, unknown>): ToolReturn {
-	return {
-		content: [{ type: 'text', text: message }],
-		structuredContent: structured,
-		isError: true,
-	};
-}
-
-// ─── Tool registration ───────────────────────────────────────────────────────
+// ─── Tools ──────────────────────────────────────────────────────────────────
 
 export function registerTools(server: McpServer): void {
 	server.registerTool(
 		'flue_list_agents',
 		{
-			title: 'List Flue Agents',
-			description: `List all Flue agents registered at a Flue HTTP endpoint.
+			title: 'List Flue agents',
+			description: `List the Flue agents you can talk to: agents registered with flue_add_agent (deployed or remote mounts, with their credential variables) and the agents the local Flue project mounts in app.ts (reachable once \`vite dev\` runs, default http://localhost:5173).
 
-Calls GET /agents on the endpoint (local \`flue dev\` or a deployed Cloudflare Worker URL) and returns the manifest — every agent discovered, with its parsed triggers. Use before flue_invoke_agent or flue_stream_agent to discover what's invokable.
+Flue 2 has no server-side agent listing — an agent is reached at its app.ts mount URL, and a conversation is that URL plus an id. Use this first to find names for flue_send_message.
 
 Args:
-  - endpoint (string, optional): Endpoint URL or registered endpoint name. Resolution order: explicit URL → name in registry → registry default → http://localhost:3583. Use flue_list_endpoints to see registered names.
-  - response_format ('json' | 'markdown', optional): Default 'json'.
-
-Returns:
-  {
-    "endpoint": string,         // The resolved URL
-    "agents": [
-      {
-        "name": string,         // Agent name (filename minus extension)
-        "triggers": {           // Parsed at build time from agent source
-          "webhook"?: true,
-          "cron"?: string
-        }
-      }
-    ]
-  }
-
-Examples:
-  - "What agents are running?" → flue_list_agents (no args)
-  - "List agents on prod" → flue_list_agents endpoint="prod-cf"
-  - "What's at https://example.workers.dev?" → flue_list_agents endpoint="https://example.workers.dev"
-
-Errors:
-  - "Endpoint '<name>' not found in registry" → register it first with flue_add_endpoint
-  - HTTP 404 / connection refused → endpoint is down or URL is wrong; verify with curl`,
-			inputSchema: {
-				endpoint: z
-					.string()
-					.optional()
-					.describe(
-						'Endpoint URL (http://… or https://…) or registered endpoint name. Falls back to registry default, then http://localhost:3583.',
-					),
-				response_format: ResponseFormat,
-			},
-			outputSchema: {
-				endpoint: z.string(),
-				agents: z.array(AgentSummary),
-			},
-			annotations: {
-				readOnlyHint: true,
-				destructiveHint: false,
-				idempotentHint: true,
-				openWorldHint: true,
-			},
+  - project_dir (optional): Flue project to inspect instead of the default (FLUE_LOOM_PROJECT_DIR, else the server's working directory).
+  - base_url (optional): where the project is served (default FLUE_LOOM_BASE_URL or http://localhost:5173).
+  - response_format (optional): "markdown" (default) or "json".`,
+			inputSchema: z.object({
+				project_dir: z.string().optional().describe('Path to a Flue project (or a directory inside one).'),
+				base_url: z.string().optional().describe('Base URL of the running project, e.g. http://localhost:5173.'),
+				response_format: responseFormat,
+			}),
+			outputSchema: z.object({
+				registry_file: z.string(),
+				registered: z.array(registeredOutput),
+				project: z
+					.object({
+						root: z.string(),
+						app: z.string().nullable(),
+						base_url: z.string(),
+						uses_glob: z.boolean(),
+						agents: z.array(z.object({ name: z.string(), export: z.string(), path: z.string(), url: z.string().nullable() })),
+					})
+					.nullable(),
+			}),
+			annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 		},
-		async ({ endpoint, response_format }) => {
-			let url: string;
+		async ({ project_dir, base_url, response_format }) => {
 			try {
-				url = await resolveEndpoint(endpoint);
+				const registered = (await listRegisteredAgents()).map((agent) => ({ ...agent, credentials: credentialsLabel(agent) }));
+				const project = discoverProject({ projectDir: project_dir, baseUrl: base_url });
+				const structured = { registry_file: registryPath(), registered, project };
+				return ok(structured, agentsMarkdown(registered, registryPath(), project), response_format);
 			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
-			}
-			try {
-				const data = await httpJson<{ agents?: unknown }>(`${url}/agents`);
-				const agents = Array.isArray(data?.agents) ? data.agents : [];
-				const output: Record<string, unknown> = { endpoint: url, agents };
-				if (response_format === 'markdown') {
-					return {
-						content: [{ type: 'text', text: formatAgentsMarkdown(url, agents) }],
-						structuredContent: output,
-					};
-				}
-				return jsonText(output);
-			} catch (err) {
-				return errorText(mapFlueError(err, { endpoint: url }), { endpoint: url });
+				return fail(err);
 			}
 		},
 	);
 
 	server.registerTool(
-		'flue_invoke_agent',
+		'flue_add_agent',
 		{
-			title: 'Invoke Flue Agent',
-			description: `Invoke a Flue agent and return its result.
+			title: 'Register a Flue agent',
+			description: `Register (or replace) a named Flue agent so other tools can address it by name. Stored in ~/.config/flue-loom/agents.json (or $FLUE_LOOM_HOME), shared by every MCP host on this machine.
 
-POSTs to /agents/:name/:id on the Flue HTTP endpoint. Two modes:
-  - sync (default): waits for the agent to finish, returns the result body
-  - webhook: fire-and-forget, returns HTTP 202 immediately
-
-The session id is the conversation thread — the same id reuses message history; a new id starts fresh. Defaults to "default".
+The URL is the agent's mount from app.ts — e.g. https://api.example.com/agents/support — without a conversation id. Credentials are never stored: name environment variables of this MCP server instead. For safety only FLUE_* variables are accepted (e.g. token_env "FLUE_PROD_TOKEN" sends "Authorization: Bearer $FLUE_PROD_TOKEN").
 
 Args:
-  - endpoint (string, optional): Endpoint URL or registered name.
-  - agent (string, required): Agent name (matches .flue/agents/<name>.{ts,js,mts,mjs}).
-  - sessionId (string, optional): Session id. Default: "default".
-  - payload (any, optional): JSON-serializable value passed to the agent handler as ctx.payload.
-  - mode ('sync' | 'webhook', optional): Default: 'sync'.
-  - response_format ('json' | 'markdown', optional): Default 'json'.
-
-Returns (sync):
-  { "endpoint": string, "agent": string, "sessionId": string, "mode": "sync", "result": <agent return value> }
-
-Returns (webhook):
-  { "endpoint": string, "agent": string, "sessionId": string, "mode": "webhook", "status": 202 }
-
-Examples:
-  - "Run the hello agent" → agent="hello"
-  - "Invoke greeter with payload" → agent="greeter", payload={"name":"Ada"}
-  - "Fire off scheduler async" → agent="scheduler", mode="webhook"
-  - "Continue thread-1's conversation with hello" → agent="hello", sessionId="thread-1"
-
-Errors:
-  - 404 with envelope type \`agent_not_webhook\` → trigger-less agent in production mode; the endpoint must run with FLUE_MODE=local (\`flue dev\` / \`flue run\` set this automatically) or the agent must export \`triggers = { webhook: true }\`. flue_invoke_agent surfaces this hint automatically via mapFlueError.
-  - 404 with envelope type \`agent_not_found\` → agent name is wrong; try flue_list_agents.
-  - Network timeout (default 60s, currently not user-configurable) → consider flue_stream_agent for long-running agents.`,
-			inputSchema: {
-				endpoint: z
-					.string()
-					.optional()
-					.describe('Endpoint URL or registered endpoint name. Falls back to default.'),
-				agent: z
-					.string()
-					.describe('Agent name (matches the file at .flue/agents/<name>.{ts,js,mts,mjs}).'),
-				sessionId: z
-					.string()
-					.optional()
-					.describe('Session id; defaults to "default". Reuse to continue a conversation thread.'),
-				payload: z
-					.unknown()
-					.optional()
-					.describe('JSON-serializable payload passed to the agent handler as ctx.payload.'),
-				mode: z
-					.enum(['sync', 'webhook'])
-					.optional()
-					.describe(
-						'Invocation mode. "sync" returns the result body; "webhook" is fire-and-forget (HTTP 202). Default: sync.',
-					),
-				response_format: ResponseFormat,
-			},
-			outputSchema: {
-				endpoint: z.string(),
-				agent: z.string(),
-				sessionId: z.string(),
-				mode: z.enum(['sync', 'webhook']),
-				result: z.unknown().optional(),
-				status: z.number().optional(),
-			},
-			annotations: {
-				readOnlyHint: false,
-				destructiveHint: false,
-				idempotentHint: false,
-				openWorldHint: true,
-			},
+  - name: short handle, e.g. "prod-support".
+  - url: agent mount URL (http/https).
+  - description (optional): what the agent does.
+  - token_env (optional): FLUE_* variable holding a bearer token.
+  - headers (optional): static, non-secret headers.
+  - header_env (optional): header name → FLUE_* variable holding its value (for API-key headers).`,
+			inputSchema: z.object({
+				name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'letters, digits, ".", "_", "-"; max 64').describe('Handle used as `agent` in other tools.'),
+				url: z.string().describe('Agent mount URL, e.g. https://api.example.com/agents/support.'),
+				description: z.string().max(500).optional(),
+				token_env: z.string().regex(CREDENTIAL_ENV_PATTERN, 'must be a FLUE_* environment variable name').optional(),
+				headers: z.record(z.string(), z.string()).optional(),
+				header_env: z.record(z.string(), z.string().regex(CREDENTIAL_ENV_PATTERN, 'must be a FLUE_* environment variable name')).optional(),
+			}),
+			outputSchema: z.object({ agent: registeredOutput, replaced: z.boolean(), registry_file: z.string() }),
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 		},
-		async ({ endpoint, agent, sessionId, payload, mode, response_format }) => {
-			let url: string;
+		async ({ name, url, description, token_env, headers, header_env }) => {
 			try {
-				url = await resolveEndpoint(endpoint);
-			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
-			}
-			const sid = sessionId ?? 'default';
-			const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
-			const m = mode ?? 'sync';
-
-			try {
-				if (m === 'webhook') {
-					// 60s bound on the dispatch; reject non-2xx so the LLM doesn't see
-					// a failed dispatch as a successful fire-and-forget.
-					const ctl = new AbortController();
-					const timer = setTimeout(() => ctl.abort(), 60_000);
-					let res: Response;
-					try {
-						res = await fetch(path, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json', 'x-webhook': 'true' },
-							body: JSON.stringify(payload ?? {}),
-							signal: ctl.signal,
-						});
-					} finally {
-						clearTimeout(timer);
-					}
-					if (!res.ok) {
-						const text = await res.text().catch(
-							(readErr: unknown) =>
-								`${res.statusText} (response body unreadable: ${readErr instanceof Error ? readErr.message : String(readErr)})`,
-						);
-						let body: unknown = text;
-						try {
-							body = JSON.parse(text);
-						} catch {
-							/* keep as text */
-						}
-						throw new HttpError(res.status, res.statusText, body, path);
-					}
-					const output: Record<string, unknown> = {
-						endpoint: url,
-						agent,
-						sessionId: sid,
-						mode: 'webhook' as const,
-						status: res.status,
-					};
-					if (response_format === 'markdown') {
-						return {
-							content: [{ type: 'text', text: formatInvokeMarkdown(url, agent, sid, 'webhook', output) }],
-							structuredContent: output,
-						};
-					}
-					return jsonText(output);
+				let parsed: URL;
+				try {
+					parsed = new URL(url);
+				} catch {
+					return fail(new Error(`Not a valid URL: ${url}`));
 				}
-
-				const data = await httpJson(path, { method: 'POST', body: payload ?? {} });
-				// Unwrap Flue's `{ result }` envelope so callers see agent fields
-				// directly. Convention: any object body with a `result` key is the
-				// envelope; an agent that legitimately returns `{ result, other }`
-				// will lose `other` here. Document loudly if that ever surfaces.
-				const unwrapped =
-					data && typeof data === 'object' && data !== null && 'result' in data
-						? (data as { result: unknown }).result
-						: data;
-				const output: Record<string, unknown> = {
-					endpoint: url,
-					agent,
-					sessionId: sid,
-					mode: 'sync' as const,
-					result: unwrapped,
+				if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fail(new Error('url must be http(s).'));
+				if (parsed.search || parsed.hash) return fail(new Error('url must be a plain mount URL without a query string or fragment.'));
+				const entry = {
+					name,
+					url: parsed.href.replace(/\/+$/, ''),
+					...(description ? { description } : {}),
+					...(token_env ? { token_env } : {}),
+					...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+					...(header_env && Object.keys(header_env).length > 0 ? { header_env } : {}),
 				};
-				if (response_format === 'markdown') {
-					return {
-						content: [{ type: 'text', text: formatInvokeMarkdown(url, agent, sid, 'sync', unwrapped) }],
-						structuredContent: output,
-					};
-				}
-				return jsonText(output);
+				const { replaced } = await upsertAgent(entry);
+				const agent = { ...entry, credentials: credentialsLabel(entry) };
+				const markdown = `${replaced ? 'Updated' : 'Registered'} **${name}** → ${entry.url}${agent.credentials !== 'none' ? ` (credentials: ${agent.credentials})` : ''}.\nTalk to it with flue_send_message { agent: "${name}", message }.`;
+				return ok({ agent, replaced, registry_file: registryPath() }, markdown);
 			} catch (err) {
-				return errorText(
-					mapFlueError(err, { endpoint: url, agent, sessionId: sid }),
-					{ endpoint: url, agent, sessionId: sid },
-				);
+				return fail(err);
 			}
 		},
 	);
 
 	server.registerTool(
-		'flue_stream_agent',
+		'flue_remove_agent',
 		{
-			title: 'Stream Flue Agent',
-			description: `Invoke a Flue agent with SSE streaming and return the accumulated output.
-
-Like flue_invoke_agent in sync mode, but uses Server-Sent Events to stream the agent's progress. Useful for long-running agents (multi-turn LLM work) where you want to see text incrementally and inspect tool calls. Returns the final assembled state once the stream completes (or the timeout triggers).
-
-The events log can grow large for long agents; if the JSON-stringified response exceeds the character limit (~25 KB), the events array is halved and a truncation note is added. The 'text' field and 'result' are kept in full.
-
-Args:
-  - endpoint (string, optional): Same as flue_invoke_agent.
-  - agent (string, required): Agent name.
-  - sessionId (string, optional): Session id. Default: "default".
-  - payload (any, optional): Agent payload.
-  - timeoutMs (number, optional): Max wall-clock time for the stream. Default: 300000 (5 min).
-  - response_format ('json' | 'markdown', optional): Default 'json'.
-
-Returns:
-  {
-    "endpoint": string,
-    "agent": string,
-    "sessionId": string,
-    "text": string,                  // Concatenated 'text_delta' event payloads (the LLM's streaming text)
-    "result": <unknown>,              // Unwrapped 'result' event payload (the agent's return value)
-    "events": [                       // Full event log for replay/inspection
-      { "event": string, "data": <unknown> }
-    ],
-    "truncated"?: boolean            // True if MAX_EVENTS cap or CHARACTER_LIMIT halving fired
-  }
-
-Event types in 'events' (Flue SDK FlueEvent + HTTP-layer synthesized events):
-  - 'agent_start': agent handler entered
-  - 'text_delta': streaming LLM text chunk (data.text accumulates into the 'text' field above)
-  - 'tool_start' / 'tool_end': agent called a tool (with toolName, args, isError, result)
-  - 'turn_end': a single LLM turn finished
-  - 'command_start' / 'command_end': session.shell() or scoped command ran
-  - 'task_start' / 'task_end': session.task() spawned a child session
-  - 'compaction_start' / 'compaction_end': message-history compaction fired
-  - 'idle': agent paused (HTTP layer synthesizes one if the handler returns without idling)
-  - 'result': handler's return value (HTTP-layer synthesized; the agent's return is unwrapped from data.data into the 'result' field above)
-  - 'error': agent threw — surfaced as isError with the Flue envelope (HTTP-layer synthesized)
-
-Examples:
-  - "Run hello with streaming" → agent="hello"
-  - "Watch tool calls during a turn" → look at events[] for event === 'tool_start' / 'tool_end'
-
-Errors:
-  - HTTP non-2xx maps to actionable Flue messages via mapFlueError (404 + envelope type 'agent_not_webhook' → trigger-less hint, 'agent_not_found' → name hint).
-  - Mid-stream 'error' events (agent threw during execution) surface as isError with the Flue envelope details and any partial text/result captured so far.
-  - Stalled stream → aborted at timeoutMs with a clear message.`,
-			inputSchema: {
-				endpoint: z
-					.string()
-					.optional()
-					.describe('Endpoint URL or registered endpoint name. Falls back to default.'),
-				agent: z.string().describe('Agent name.'),
-				sessionId: z
-					.string()
-					.optional()
-					.describe('Session id; defaults to "default".'),
-				payload: z
-					.unknown()
-					.optional()
-					.describe('JSON-serializable payload passed to the agent handler.'),
-				timeoutMs: z
-					.number()
-					.int()
-					.positive()
-					.optional()
-					.describe('Wall-clock timeout in milliseconds. Default: 300000 (5 minutes).'),
-				response_format: ResponseFormat,
-			},
-			outputSchema: {
-				endpoint: z.string(),
-				agent: z.string(),
-				sessionId: z.string(),
-				text: z.string(),
-				result: z.unknown().optional(),
-				events: z.array(
-					z.object({
-						event: z.string(),
-						data: z.unknown(),
-					}),
-				),
-				truncated: z.boolean().optional(),
-			},
-			annotations: {
-				readOnlyHint: false,
-				destructiveHint: false,
-				idempotentHint: false,
-				openWorldHint: true,
-			},
-		},
-		async ({ endpoint, agent, sessionId, payload, timeoutMs, response_format }) => {
-			let url: string;
-			try {
-				url = await resolveEndpoint(endpoint);
-			} catch (err) {
-				return errorText(err instanceof Error ? err.message : String(err), { endpoint: endpoint ?? "" });
-			}
-			const sid = sessionId ?? 'default';
-			const path = `${url}/agents/${encodeURIComponent(agent)}/${encodeURIComponent(sid)}`;
-			const ms = timeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
-
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), ms);
-
-			const events: Array<{ event: string; data: unknown }> = [];
-			let textBuffer = '';
-			let resultPayload: unknown = undefined;
-			let streamErrorEnvelope:
-				| { type?: unknown; message?: unknown; details?: unknown }
-				| null = null;
-			let totalEventsSeen = 0;
-			let cappedEarly = false;
-
-			try {
-				const stream = await postSse(path, payload ?? {}, { signal: controller.signal });
-
-				for await (const ev of parseSse(stream)) {
-					totalEventsSeen++;
-					let parsed: unknown = ev.data;
-					try {
-						parsed = JSON.parse(ev.data);
-					} catch {
-						/* keep as raw string */
-					}
-					// Cap the events log; text and result still accumulate past it.
-					if (events.length < MAX_EVENTS) {
-						events.push({ event: ev.event, data: parsed });
-					} else if (!cappedEarly) {
-						events.push({
-							event: '__truncated__',
-							data: { reason: `event log capped at ${MAX_EVENTS} entries`, droppedFromHere: true },
-						});
-						cappedEarly = true;
-					}
-
-					// Flue emits FlueEvent.type as the SSE event name. Streaming
-					// LLM text comes through as 'text_delta' with a `text` payload
-					// (see packages/sdk/src/types.ts:397).
-					if (ev.event === 'text_delta') {
-						if (parsed && typeof parsed === 'object' && 'text' in parsed) {
-							textBuffer += String((parsed as { text: unknown }).text ?? '');
-						} else if (typeof ev.data === 'string') {
-							// Some servers may send raw text without the JSON wrapper.
-							textBuffer += ev.data;
-						}
-					}
-					if (ev.event === 'result') {
-						// Flue wraps as { type: 'result', data: <agent return> }; unwrap
-						// to match sync semantics (see build-plugin-node.ts:222-226).
-						resultPayload =
-							parsed && typeof parsed === 'object' && parsed !== null && 'data' in parsed
-								? (parsed as { data: unknown }).data
-								: parsed;
-					}
-					if (ev.event === 'error') {
-						// HTTP layer emits 'error' when the agent throws mid-stream
-						// (build-plugin-node.ts:227-232). Payload is the Flue error
-						// envelope. Capture and surface as isError after the loop —
-						// preserve any partial text/result the LLM already produced.
-						if (parsed && typeof parsed === 'object') {
-							streamErrorEnvelope = parsed as {
-								type?: unknown;
-								message?: unknown;
-								details?: unknown;
-							};
-						}
-					}
-				}
-			} catch (err) {
-				if (err instanceof Error && err.name === 'AbortError') {
-					return errorText(
-						`Stream timed out after ${ms}ms talking to agent "${agent}" (session "${sid}") at ${url}. ` +
-							`Increase timeoutMs or check why the agent stalled (try flue_invoke_agent in sync mode for a fresh attempt).`,
-						{ endpoint: url, agent, sessionId: sid, timedOutAt: ms, partialEvents: events.length },
-					);
-				}
-				return errorText(
-					mapFlueError(err, { endpoint: url, agent, sessionId: sid }),
-					{ endpoint: url, agent, sessionId: sid, partialEvents: events.length },
-				);
-			} finally {
-				clearTimeout(timer);
-			}
-
-			// Mid-stream agent failure: surface as isError with whatever partial
-			// text/result we captured before the error event.
-			if (streamErrorEnvelope) {
-				const type = String(streamErrorEnvelope.type ?? 'unknown');
-				const message = String(streamErrorEnvelope.message ?? 'Agent error during stream');
-				return errorText(
-					`Flue stream error [${type}]: ${message} (agent "${agent}", session "${sid}", endpoint ${url})`,
-					{
-						endpoint: url,
-						agent,
-						sessionId: sid,
-						errorType: type,
-						errorMessage: message,
-						partialText: textBuffer,
-						partialResult: resultPayload,
-						eventsSeen: totalEventsSeen,
-					},
-				);
-			}
-
-			// Truncate the events log if the JSON envelope would blow the character limit.
-			let finalEvents = events;
-			let truncated = false;
-			let truncationNote: string | undefined;
-			let envelope = JSON.stringify(
-				{ endpoint: url, agent, sessionId: sid, text: textBuffer, result: resultPayload, events },
-				null,
-				2,
-			);
-			while (envelope.length > CHARACTER_LIMIT && finalEvents.length > 1) {
-				finalEvents = finalEvents.slice(0, Math.max(1, Math.floor(finalEvents.length / 2)));
-				truncated = true;
-				envelope = JSON.stringify(
-					{ endpoint: url, agent, sessionId: sid, text: textBuffer, result: resultPayload, events: finalEvents },
-					null,
-					2,
-				);
-			}
-			if (truncated) {
-				truncationNote = `Event log truncated from ${events.length} to ${finalEvents.length} events to fit ${CHARACTER_LIMIT} char limit. Text and result are complete; use sync mode for less verbose responses.`;
-			} else if (cappedEarly) {
-				truncationNote = `Event log capped at MAX_EVENTS=${MAX_EVENTS} during streaming (saw ${totalEventsSeen} events total). Text and result are complete.`;
-			}
-
-			const output: Record<string, unknown> = {
-				endpoint: url,
-				agent,
-				sessionId: sid,
-				text: textBuffer,
-				result: resultPayload,
-				events: finalEvents,
-				truncated: truncated || cappedEarly,
-			};
-
-			if (response_format === 'markdown') {
-				return {
-					content: [
-						{
-							type: 'text',
-							text: formatStreamMarkdown(url, agent, sid, textBuffer, resultPayload, events.length, truncated, truncationNote),
-						},
-					],
-					structuredContent: output,
-				};
-			}
-			return jsonText(output);
-		},
-	);
-
-	server.registerTool(
-		'flue_add_endpoint',
-		{
-			title: 'Add Flue Endpoint',
-			description: `Register a Flue endpoint by name for later reuse.
-
-Persists to \$FLUE_LOOM_HOME/endpoints.json (default: ~/.config/flue-loom/endpoints.json). Once registered, refer to the endpoint by name in other tools instead of the full URL.
-
-Args:
-  - name (string, required): Short name, e.g. "local", "prod-cf", "staging".
-  - url (string, required): Full URL. Validated with new URL() — must be http(s)://. Trailing slashes are stripped.
-  - default (boolean, optional): If true, set as the default endpoint. The first registered endpoint becomes default automatically.
-
-Returns:
-  { "ok": true, "registry": { "endpoints": [...], "defaultName"?: string } }
-
-Examples:
-  - "Save localhost as 'local' default" → name="local", url="http://localhost:3583", default=true
-  - "Register the prod worker" → name="prod-cf", url="https://my-agents.example.workers.dev"
-
-Errors:
-  - Invalid URL → "Invalid URL: <url>. Expected http(s)://host[:port][/path]."`,
-			inputSchema: {
-				name: z
-					.string()
-					.min(1, 'name cannot be empty')
-					.describe('Short name for the endpoint, e.g. "local" or "prod-cf".'),
-				url: z
-					.string()
-					.describe('Full URL to the Flue HTTP endpoint, e.g. http://localhost:3583.'),
-				default: z
-					.boolean()
-					.optional()
-					.describe('If true, set as the default endpoint for endpoint-less calls.'),
-			},
-			outputSchema: {
-				ok: z.literal(true),
-				registry: RegistryShape,
-			},
-			annotations: {
-				readOnlyHint: false,
-				destructiveHint: false,
-				idempotentHint: true,
-				openWorldHint: false,
-			},
-		},
-		async ({ name, url, default: makeDefault }) => {
-			let parsedUrl: URL;
-			try {
-				parsedUrl = new URL(url);
-			} catch {
-				return errorText(
-					`Invalid URL: "${url}". Expected http(s)://host[:port][/path].`,
-					{ name, url, ok: false },
-				);
-			}
-			if (!/^https?:$/.test(parsedUrl.protocol)) {
-				return errorText(
-					`Unsupported URL protocol "${parsedUrl.protocol}". Expected http: or https:.`,
-					{ name, url, ok: false },
-				);
-			}
-
-			const state = await addEndpoint(name, url, makeDefault);
-			const output: Record<string, unknown> = { ok: true as const, registry: state };
-			return jsonText(output);
-		},
-	);
-
-	server.registerTool(
-		'flue_list_endpoints',
-		{
-			title: 'List Flue Endpoints',
-			description: `List all registered Flue endpoints and the current default.
-
-Reads \$FLUE_LOOM_HOME/endpoints.json. Use to see which endpoints are configured before referencing one by name in flue_invoke_agent / flue_list_agents.
-
-Args:
-  - response_format ('json' | 'markdown', optional): Default 'json'.
-
-Returns:
-  {
-    "endpoints": [{ "name": string, "url": string }],   // empty array on cold start
-    "defaultName"?: string                               // omitted when no default is set
-  }
-
-Examples:
-  - "Which endpoints are configured?"
-  - "What URL is 'prod-cf' pointing to?" → look at endpoints[] for the matching name
-
-Errors: none in normal operation. A corrupted registry file logs to stderr and returns an empty list (so subsequent flue_add_endpoint can repair).`,
-			inputSchema: {
-				response_format: ResponseFormat,
-			},
-			outputSchema: {
-				endpoints: z.array(EndpointEntry),
-				defaultName: z.string().optional(),
-			},
-			annotations: {
-				readOnlyHint: true,
-				destructiveHint: false,
-				idempotentHint: true,
-				openWorldHint: false,
-			},
-		},
-		async ({ response_format }) => {
-			const state = await listEndpoints();
-			const output: Record<string, unknown> = {
-				endpoints: state.endpoints,
-				...(state.defaultName !== undefined ? { defaultName: state.defaultName } : {}),
-			};
-			if (response_format === 'markdown') {
-				return {
-					content: [{ type: 'text', text: formatEndpointsMarkdown(state) }],
-					structuredContent: output,
-				};
-			}
-			return jsonText(output);
-		},
-	);
-
-	server.registerTool(
-		'flue_remove_endpoint',
-		{
-			title: 'Remove Flue Endpoint',
-			description: `Remove a registered Flue endpoint by name.
-
-If the removed endpoint was the default, the default switches to the first remaining endpoint (or undefined if none remain). Removing a non-existent name is a no-op — the registry is returned unchanged.
-
-Args:
-  - name (string, required): Name of the endpoint to remove.
-
-Returns:
-  { "ok": true, "registry": { "endpoints": [...], "defaultName"?: string } }
-
-Examples:
-  - "Forget the staging endpoint" → name="staging"`,
-			inputSchema: {
-				name: z.string().min(1, 'name cannot be empty').describe('Name of the endpoint to remove.'),
-			},
-			outputSchema: {
-				ok: z.literal(true),
-				registry: RegistryShape,
-			},
-			annotations: {
-				readOnlyHint: false,
-				destructiveHint: false,
-				idempotentHint: true,
-				openWorldHint: false,
-			},
+			title: 'Unregister a Flue agent',
+			description: 'Remove a named agent from the flue-loom registry. Only the registry entry is removed; the agent and its conversations are untouched. No-op when the name is not registered.',
+			inputSchema: z.object({ name: z.string().min(1).describe('Registered agent name.') }),
+			outputSchema: z.object({ removed: z.boolean(), registry_file: z.string() }),
+			annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		},
 		async ({ name }) => {
-			const state = await removeEndpoint(name);
-			const output: Record<string, unknown> = { ok: true as const, registry: state };
-			return jsonText(output);
+			try {
+				const { removed } = await removeAgent(name);
+				return ok({ removed, registry_file: registryPath() }, removed ? `Removed **${name}** from the registry.` : `No registered agent named "${name}"; nothing changed.`);
+			} catch (err) {
+				return fail(err);
+			}
 		},
 	);
+
+	server.registerTool(
+		'flue_send_message',
+		{
+			title: 'Send a message to a Flue agent',
+			description: `Deliver a message into a Flue agent conversation and (by default) wait for the agent's reply, streaming progress for tool calls and reply text when the host supports progress notifications.
+
+Conversations are durable and server-side: reuse the returned conversation_id to continue with full context; omit it to start a new conversation (an id is generated and returned). If the agent is still working when the wait ends, the result is "pending" with a submission_id for flue_read_reply — the agent keeps going.
+
+Args:
+  - agent | url | conversation_url: which agent (see flue_list_agents).
+  - conversation_id (optional): conversation to create or continue.
+  - message: the text to deliver.
+  - signal_type (optional): deliver a structured event (kind "signal", e.g. "webhook", "schedule") instead of a user turn; attributes (optional) are string key/values the agent reads as trusted metadata.
+  - initial_data (optional): creation data, validated by the agent's initialData schema; only used when this message creates the conversation.
+  - create_only (optional): fail if the conversation already exists. uid (optional): continue only this conversation incarnation.
+  - idempotency_key (optional, ≤256 chars): retrying with the same key never delivers twice.
+  - wait (optional, default true): false returns right after the agent accepts the message.
+  - timeout_seconds (optional): max wait, default ${DEFAULT_WAIT_SECONDS}.
+
+Errors explain the fix: unreachable server (start \`vite dev\`), plain 404 (nothing mounted at that URL), 401/403 (register credentials), invalid initial_data, failed or aborted submissions (with the agent's error type).`,
+			inputSchema: z.object({
+				...targetFields,
+				conversation_id: conversationId.optional(),
+				message: z.string().min(1).describe('Message text for the agent.'),
+				signal_type: z.string().min(1).optional().describe('Deliver as a signal of this type instead of a user message.'),
+				attributes: z.record(z.string(), z.string()).optional().describe('Signal attributes (requires signal_type).'),
+				initial_data: z.record(z.string(), z.unknown()).optional().describe('Creation data for a new conversation.'),
+				create_only: z.boolean().optional().describe('Reject if the conversation already exists.'),
+				uid: z.string().optional().describe('Continue only this conversation incarnation (from an earlier result).'),
+				idempotency_key: z.string().min(1).max(256).optional().describe('Deduplicates retried sends.'),
+				wait: z.boolean().optional().describe('Wait for the reply (default true).'),
+				timeout_seconds: waitSeconds,
+				response_format: responseFormat,
+			}),
+			outputSchema: replyOutput,
+			annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+		},
+		async (args, ctx) => {
+			let target: ResolvedTarget | undefined;
+			try {
+				if (args.attributes && !args.signal_type) return fail(new Error('`attributes` only applies to signals: also pass `signal_type`.'));
+				if (args.create_only && args.uid) return fail(new Error('Pass either create_only or uid, not both.'));
+				if (args.uid && args.initial_data) return fail(new Error('initial_data only applies when creating a conversation; drop uid.'));
+				target = await resolveTarget(args, { requireConversation: false });
+				const client = clientFor(target);
+				const message: DeliveredMessage = args.signal_type
+					? { kind: 'signal', type: args.signal_type, body: args.message, ...(args.attributes ? { attributes: args.attributes } : {}) }
+					: { kind: 'user', body: args.message };
+				const admission = await client.send({
+					message,
+					...(args.initial_data ? { initialData: args.initial_data } : {}),
+					...(args.create_only ? { uid: null } : args.uid ? { uid: args.uid } : {}),
+					...(args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {}),
+					signal: ctx.mcpReq.signal,
+				});
+				const base = replyFrom(target, admission);
+				if (args.wait === false) {
+					const out: ReplyOutput = { ...base, outcome: 'pending', activity: [] };
+					return ok(out, replyMarkdown(out), args.response_format);
+				}
+				const seconds = args.timeout_seconds ?? DEFAULT_WAIT_SECONDS;
+				const progress = progressReporter(ctx.mcpReq._meta?.progressToken, (notification) => ctx.mcpReq.notify(notification));
+				await progress?.(`message accepted (submission ${admission.submissionId})`);
+				const outcome = await waitForReply(client, admission, { timeoutMs: seconds * 1000, signal: ctx.mcpReq.signal, progress });
+				if (outcome.kind === 'timeout') {
+					const out: ReplyOutput = { ...base, outcome: 'pending', activity: outcome.tracker.activity() };
+					return ok(out, replyMarkdown(out, seconds), args.response_format);
+				}
+				const text = truncate(outcome.reply.text);
+				const out: ReplyOutput = {
+					...base,
+					outcome: 'completed',
+					text: text.text,
+					data: outcome.reply.data,
+					...(outcome.reply.metadata ? { metadata: outcome.reply.metadata } : {}),
+					...(outcome.tracker.answeredBy ? { answered_by_submission_id: outcome.tracker.answeredBy } : {}),
+					activity: outcome.tracker.activity(),
+					...(text.truncated ? { truncated: true } : {}),
+				};
+				return ok(out, replyMarkdown(out), args.response_format);
+			} catch (err) {
+				return fail(err, target);
+			}
+		},
+	);
+
+	server.registerTool(
+		'flue_read_reply',
+		{
+			title: 'Read a Flue submission reply',
+			description: `Wait for (or fetch) the reply to an earlier flue_send_message submission — typically one that came back "pending", or one sent with wait: false. Safe to call repeatedly: a settled submission returns immediately. Streams progress like flue_send_message.
+
+Args:
+  - agent | url | conversation_url, plus conversation_id: the conversation.
+  - submission_id: from the earlier result.
+  - timeout_seconds (optional): max wait, default ${DEFAULT_WAIT_SECONDS}.`,
+			inputSchema: z.object({
+				...targetFields,
+				conversation_id: conversationId.optional(),
+				submission_id: z.string().min(1).describe('Submission id returned by flue_send_message.'),
+				timeout_seconds: waitSeconds,
+				response_format: responseFormat,
+			}),
+			outputSchema: replyOutput,
+			annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+		},
+		async (args, ctx) => {
+			let target: ResolvedTarget | undefined;
+			try {
+				target = await resolveTarget(args, { requireConversation: true });
+				const client = clientFor(target);
+				const seconds = args.timeout_seconds ?? DEFAULT_WAIT_SECONDS;
+				const progress = progressReporter(ctx.mcpReq._meta?.progressToken, (notification) => ctx.mcpReq.notify(notification));
+				const outcome = await waitForReply(client, args.submission_id, { timeoutMs: seconds * 1000, signal: ctx.mcpReq.signal, progress });
+				const base = replyFrom(target, { submissionId: args.submission_id });
+				if (outcome.kind === 'timeout') {
+					const out: ReplyOutput = { ...base, outcome: 'pending', activity: outcome.tracker.activity() };
+					return ok(out, replyMarkdown(out, seconds), args.response_format);
+				}
+				const text = truncate(outcome.reply.text);
+				const out: ReplyOutput = {
+					...base,
+					...(outcome.reply.uid ? { uid: outcome.reply.uid } : {}),
+					outcome: 'completed',
+					text: text.text,
+					data: outcome.reply.data,
+					...(outcome.reply.metadata ? { metadata: outcome.reply.metadata } : {}),
+					...(outcome.tracker.answeredBy ? { answered_by_submission_id: outcome.tracker.answeredBy } : {}),
+					activity: outcome.tracker.activity(),
+					...(text.truncated ? { truncated: true } : {}),
+				};
+				return ok(out, replyMarkdown(out), args.response_format);
+			} catch (err) {
+				return fail(err, target);
+			}
+		},
+	);
+
+	server.registerTool(
+		'flue_get_conversation',
+		{
+			title: 'Get a Flue conversation',
+			description: `Read a conversation's transcript: user and assistant messages, signals, tool calls with inputs/outputs (large values previewed), data parts, and each submission's outcome. Use it to review what an agent did, debug a failed turn, or pick up a conversation someone else started. A conversation that doesn't exist yet returns exists: false.
+
+Args:
+  - agent | url | conversation_url, plus conversation_id: the conversation.
+  - last (optional): how many recent messages to return (default ${DEFAULT_HISTORY_MESSAGES}, max ${MAX_HISTORY_MESSAGES}).
+  - include_hidden (optional): also return runtime plumbing and diagnostic messages (default false: visible messages only).`,
+			inputSchema: z.object({
+				...targetFields,
+				conversation_id: conversationId.optional(),
+				last: z.number().int().min(1).max(MAX_HISTORY_MESSAGES).optional().describe('Most recent messages to return.'),
+				include_hidden: z.boolean().optional().describe('Include hidden and diagnostic messages.'),
+				response_format: responseFormat,
+			}),
+			outputSchema: z.object({
+				agent: z.string(),
+				conversation_url: z.string(),
+				conversation_id: z.string(),
+				exists: z.boolean(),
+				message_count: z.number(),
+				messages: z.array(z.record(z.string(), z.unknown())),
+				settlements: z.array(z.record(z.string(), z.unknown())),
+				truncated: z.boolean().optional(),
+			}),
+			annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+		},
+		async (args, ctx) => {
+			let target: ResolvedTarget | undefined;
+			try {
+				target = await resolveTarget(args, { requireConversation: true });
+				let snapshot: FlueConversationSnapshot | undefined;
+				try {
+					snapshot = await clientFor(target).history({ signal: ctx.mcpReq.signal });
+				} catch (err) {
+					if (!(err instanceof FlueApiError && err.status === 404 && hasEnvelopeType(err.body, 'stream_not_found'))) throw err;
+				}
+				const visible = (snapshot?.messages ?? []).filter((message) => args.include_hidden || message.display === 'visible');
+				const limit = args.last ?? DEFAULT_HISTORY_MESSAGES;
+				const messages: HistoryMessage[] = visible.slice(-limit).map(projectMessage);
+				const structured = {
+					agent: target.label,
+					conversation_url: target.conversationUrl,
+					conversation_id: target.conversationId,
+					exists: snapshot !== undefined,
+					message_count: visible.length,
+					messages,
+					settlements: (snapshot?.settlements ?? []).map(projectSettlement),
+					...(messages.length < visible.length ? { truncated: true } : {}),
+				};
+				return ok(structured, historyMarkdown(target.label, target.conversationUrl, snapshot, messages, visible.length), args.response_format);
+			} catch (err) {
+				return fail(err, target);
+			}
+		},
+	);
+
+	server.registerTool(
+		'flue_abort',
+		{
+			title: 'Abort a Flue conversation',
+			description: `Abort all in-flight and queued work in a Flue conversation (the running submission and anything queued behind it). The conversation and its history remain; new messages can be sent afterwards. Returns aborted: false when the conversation was idle.
+
+Args:
+  - agent | url | conversation_url, plus conversation_id: the conversation.`,
+			inputSchema: z.object({
+				...targetFields,
+				conversation_id: conversationId.optional(),
+			}),
+			outputSchema: z.object({ agent: z.string(), conversation_url: z.string(), conversation_id: z.string(), aborted: z.boolean() }),
+			annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+		},
+		async (args, ctx) => {
+			let target: ResolvedTarget | undefined;
+			try {
+				target = await resolveTarget(args, { requireConversation: true });
+				const { aborted } = await clientFor(target).abort({ signal: ctx.mcpReq.signal });
+				const structured = { agent: target.label, conversation_url: target.conversationUrl, conversation_id: target.conversationId, aborted };
+				return ok(structured, aborted ? `Aborting the running and queued work in \`${target.conversationId}\`; those submissions settle as aborted.` : `\`${target.conversationId}\` was idle; nothing to abort.`);
+			} catch (err) {
+				return fail(err, target);
+			}
+		},
+	);
+}
+
+function hasEnvelopeType(body: unknown, type: string): boolean {
+	const error = (body as { error?: { type?: unknown } } | null)?.error;
+	return error?.type === type;
 }

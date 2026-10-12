@@ -1,0 +1,16 @@
+{
+	"name": "flue-loom",
+	"owner": {
+		"name": "Jared McFarland"
+	},
+	"description": "Flue Loom — a Claude Code plugin for building and operating Flue 2 agents.",
+	"plugins": [
+		{
+			"name": "flue-loom",
+			"source": "./",
+			"description": "Build, run, debug, and ship Flue 2 agents from Claude Code, plus an MCP server for talking to deployed agents.",
+			"category": "development",
+			"tags": ["flue", "agents", "typescript", "cloudflare", "mcp"]
+		}
+	]
+}

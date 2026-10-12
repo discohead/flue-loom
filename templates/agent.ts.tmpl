@@ -1,0 +1,12 @@
+'use agent';
+import { useModel } from '@flue/runtime';
+
+// Every exported capitalized function in a 'use agent' module is an agent,
+// and its name ({{Name}}) is the agent's durable identity — rename it only
+// with a migration plan (or pin `{{Name}}.agentName = '{{name}}'`).
+// The returned string is the agent's system instructions; the function
+// re-renders before every model turn and must stay synchronous.
+export function {{Name}}() {
+	useModel('{{MODEL}}');
+	return `{{INSTRUCTIONS}}`;
+}

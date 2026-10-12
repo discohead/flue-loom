@@ -1,0 +1,23 @@
+import { defineTool } from '@flue/runtime';
+import * as v from 'valibot';
+
+// A tool whose side effects must complete across crashes and redeploys.
+// Every effect goes through step.do(name, fn): on recovery the call re-runs,
+// completed steps return their recorded values, and execution resumes at the
+// first unfinished step. Steps are at-least-once executed — make each one
+// idempotent (key external writes on stable ids).
+export const {{exportName}} = defineTool({
+	name: '{{tool_name}}',
+	description: '{{DESCRIPTION}}',
+	input: v.object({ accountId: v.string(), items: v.array(v.string()) }),
+	durable: true,
+	async run({ data, step }) {
+		// Code between steps re-runs on recovery: keep it cheap and effect-free.
+		const batch = await step.do('create-batch', async () => ({ batchId: `batch-${data.accountId}` }));
+		for (const item of data.items) {
+			// Deterministic, unique step names; small JSON return values.
+			await step.do(`apply:${item}`, async () => ({ item, applied: true }));
+		}
+		return { output: { batchId: batch.batchId, applied: data.items.length } };
+	},
+});

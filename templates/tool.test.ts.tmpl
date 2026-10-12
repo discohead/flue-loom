@@ -1,0 +1,10 @@
+import { expect, it } from 'vitest';
+import { {{exportName}} } from '../tools/{{file}}.ts';
+
+type Context = Parameters<typeof {{exportName}}.run>[0];
+
+it('{{tool_name}} returns an output envelope', async () => {
+	// Tools are plain functions: call run() with a minimal context — no model involved.
+	const result = await {{exportName}}.run({ data: { query: 'example' }, toolCallId: 'test-1', log: console } as Context);
+	expect(result).toMatchObject({ output: expect.anything() });
+});

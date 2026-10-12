@@ -1,0 +1,15 @@
+import { defineMcpConnection } from '@flue/runtime';
+
+// A remote MCP server whose tools mount as mcp__{{tool_name}}__<tool>.
+// Mount from an agent: useMcpConnection({{exportName}}), or narrow per agent:
+// useMcpConnection({ ...{{exportName}}, tools: ['<tool>'] }).
+export const {{exportName}} = defineMcpConnection({
+	name: '{{tool_name}}',
+	url: '{{URL}}',
+	// Bearer token: a string, or a function resolved on every request (per-user/rotating tokens).
+	auth: () => process.env.{{ENV_VAR}} ?? '',
+	// Allowlist keeps the tool set (and prompt) small; unknown names fail the connection.
+	// tools: ['search', 'get'],
+	// Run without this server (the model is told) instead of failing when it's unreachable.
+	optional: true,
+});

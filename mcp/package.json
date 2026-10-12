@@ -1,9 +1,22 @@
 {
 	"name": "@flue-loom/mcp",
-	"version": "0.1.0",
-	"description": "MCP server for the Flue SDK operator face — list and invoke Flue agents over HTTP from any MCP host (Claude Code, Claude Desktop, ChatGPT desktop, Cursor).",
+	"version": "0.2.0",
+	"description": "MCP server for talking to Flue 2 agents over their conversation URLs — send messages, wait for replies with progress, read history, abort — from any MCP host (Claude Code, Claude Desktop, Cursor, ChatGPT desktop).",
 	"license": "MIT",
 	"type": "module",
+	"author": "Jared McFarland",
+	"homepage": "https://github.com/discohead/flue-loom/tree/main/mcp",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/discohead/flue-loom.git",
+		"directory": "mcp"
+	},
+	"keywords": [
+		"mcp",
+		"flue",
+		"agents",
+		"model-context-protocol"
+	],
 	"main": "./dist/server.mjs",
 	"bin": {
 		"flue-loom-mcp": "./dist/server.mjs"
@@ -13,21 +26,30 @@
 		"README.md"
 	],
 	"scripts": {
-		"build": "tsdown",
+		"build": "tsdown && node scripts/third-party-licenses.mjs",
 		"dev": "tsx src/server.ts",
-		"check:types": "tsc --noEmit"
-	},
-	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.29.0",
-		"zod": "^4.4.2"
+		"check:types": "tsc --noEmit",
+		"test": "node --test test/*.test.mjs",
+		"pack:mcpb": "node scripts/pack-mcpb.mjs"
 	},
 	"devDependencies": {
-		"@types/node": "^22.0.0",
-		"tsdown": "^0.20.3",
-		"tsx": "^4.19.0",
-		"typescript": "^5.6.0"
+		"@anthropic-ai/mcpb": "^2.1.2",
+		"@flue/sdk": "^2.1.1",
+		"@modelcontextprotocol/client": "^2.1.0",
+		"@modelcontextprotocol/sdk": "^1.30.1",
+		"@modelcontextprotocol/server": "^2.1.0",
+		"@types/node": "^22.20.4",
+		"tsdown": "^0.23.0",
+		"tsx": "^4.23.15",
+		"typescript": "^7.0.2",
+		"zod": "^4.6.5"
 	},
 	"engines": {
 		"node": ">=22"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild"
+		]
 	}
 }

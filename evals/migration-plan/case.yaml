@@ -1,0 +1,27 @@
+schema_version: "1.1"
+name: migration-plan
+description: Plans a Flue 0.x → 2 upgrade without editing, covering the redesign's real mappings. Run with --scaffold.
+tags: [migration]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 20
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    This workspace is a project built on an early Flue release, and I want to move it to the current major version. Read it and give me a concrete migration plan for each agent — what each piece of code becomes and anything that will break for its callers or its stored data. Don't change any files.
+graders:
+  - name: vite
+    type: regex
+    pattern: "vite (dev|build)"
+  - name: mapping
+    type: llm
+    weight: 3
+    criteria: |
+      PASS if the plan covers at least five of these six points correctly and recommends no pre-2.0 API; otherwise FAIL.
+      1. Each `FlueContext` handler becomes a `'use agent'` module exporting a capitalized, synchronous agent function that calls `useModel(...)` and returns instructions, with behavior composed from hooks (useTool, useSubagent/useInstruction, etc.) rather than `init()`/`session.prompt()`.
+      2. `export const triggers` goes away: the webhook agent gets an explicit mount in `app.ts` (`createAgentRouter`), and the `cron` trigger becomes a schedule that calls `dispatch()` (e.g. croner in app.ts on Node, or Cron Triggers on Cloudflare).
+      3. The `Type.Object` tool with `execute` becomes a valibot `input` schema with `run({ data })` returning `{ output }`.
+      4. The `.flue/roles/reviewer.md` role becomes a subagent (or instructions), since roles no longer exist.
+      5. `flue dev` / `flue build` are replaced by `vite dev` / `vite build` with the `flue()` plugin.
+      6. It warns that HTTP callers must move to the new conversation protocol (@flue/sdk: POST → 202 admission, then read) and that pre-2.0 persisted state is not carried over.
+expected_outcome: A per-agent plan mapping handlers, triggers, tools, roles, and tooling to Flue 2, with caller and state warnings.
