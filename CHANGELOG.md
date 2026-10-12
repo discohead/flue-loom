@@ -12,7 +12,7 @@ A rewrite for Flue 2 (verified against 2.1.1) and current Claude Code plugin con
 - **Hooks**: SessionStart maps the project (target, versions, agents and mounts, persistence, missing Cloudflare migrations, agents Flue will silently skip, pre-2.0 code); PostToolUse lints edits using the project's own `@flue/vite` scanner (directive placement, async agents, identities and Durable Object name collisions, pre-2.0 APIs, unmounted agents, wrangler/vite/flue config wiring, Agent Skills frontmatter). Exec-form hook commands.
 - **Templates** replaced with verified Flue 2 components: agent, agent with tools/state, tool, harness tool, durable tool, SKILL.md, subagent, MCP connection, custom hook, Vitest config, tool test.
 - **Scripts**: `flue-talk.mjs` (zero-dependency conversation client), `flue-inspect.mjs` (project report), `flue-models.mjs` (installed model catalog and id checks), `run-evals.sh`; removed `sse-invoke.sh`, `detect-workspace.sh`, `post-edit-flue.mjs`.
-- **Manifest and distribution**: `marketplace.json` (install with `/plugin marketplace add discohead/flue-loom`), MCP registration moved to `.mcp.json` (the old `.claude-plugin/mcp.json` was never loaded), maintainer notes moved to `.claude/CLAUDE.md`.
+- **Manifest and distribution**: `marketplace.json` (install with `/plugin marketplace add discohead/flue-loom`), MCP server registered inline in `plugin.json` (the old `.claude-plugin/mcp.json` was never loaded), maintainer notes moved to `.claude/CLAUDE.md`.
 - **Tests and evals**: 53 `node:test` tests for the scripts; a `claude plugin eval` suite with four scaffolded cases.
 
 ### MCP server (`@flue-loom/mcp` 0.2.0)

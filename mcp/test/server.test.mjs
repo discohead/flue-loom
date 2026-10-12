@@ -40,17 +40,19 @@ async function freePort() {
 	});
 }
 
-async function waitFor(url, ms) {
+// Vite answers before the Flue runtime finishes booting (503
+// runtime_unavailable), so wait until a conversation route answers.
+async function waitForRuntime(base, ms) {
 	const deadline = Date.now() + ms;
 	while (Date.now() < deadline) {
 		try {
-			await fetch(url);
-			return;
+			if ((await fetch(`${base}/agents/echo/readiness-probe`)).status !== 503) return;
 		} catch {
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			// not listening yet
 		}
+		await new Promise((resolve) => setTimeout(resolve, 250));
 	}
-	throw new Error(`timed out waiting for ${url}`);
+	throw new Error(`timed out waiting for the Flue runtime at ${base}`);
 }
 
 function text(result) {
@@ -76,7 +78,7 @@ before(async () => {
 			env: { ...process.env, VAULT_TOKEN: TOKEN },
 			stdio: 'ignore',
 		});
-		await waitFor(`${baseUrl}/`, 30_000);
+		await waitForRuntime(baseUrl, 60_000);
 	} else {
 		baseUrl = `http://localhost:${await freePort()}`; // nothing listens here
 	}

@@ -9,5 +9,25 @@
 	"homepage": "https://github.com/discohead/flue-loom",
 	"repository": "https://github.com/discohead/flue-loom",
 	"license": "MIT",
-	"keywords": ["flue", "agents", "agent-framework", "hooks", "vite", "cloudflare", "mcp", "durable-streams"]
+	"keywords": [
+		"flue",
+		"agents",
+		"agent-framework",
+		"hooks",
+		"vite",
+		"cloudflare",
+		"mcp",
+		"durable-streams"
+	],
+	"mcpServers": {
+		"flue": {
+			"command": "node",
+			"args": [
+				"${CLAUDE_PLUGIN_ROOT}/mcp/dist/server.mjs"
+			],
+			"env": {
+				"FLUE_LOOM_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
+			}
+		}
+	}
 }

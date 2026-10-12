@@ -6,8 +6,8 @@ For Claude Code (and humans) working *on* the plugin. The plugin's own skills ar
 
 No monorepo machinery. Two deliverables:
 
-1. **The plugin** (repo root). `.claude-plugin/plugin.json` + `marketplace.json`; everything else is auto-discovered: `skills/`, `agents/`, `hooks/hooks.json`, `.mcp.json`. There is no `commands/` directory — commands are skills with `disable-model-invocation: true`. Don't add a top-level `bin/` (it blocks claude.ai/Cowork installs).
-2. **`@flue-loom/mcp`** (`mcp/`). TypeScript → tsdown → `mcp/dist/server.mjs`, self-contained and **committed**: `.mcp.json` runs it straight from the plugin install, where there's no `node_modules`.
+1. **The plugin** (repo root). `.claude-plugin/plugin.json` + `marketplace.json`; `skills/`, `agents/`, and `hooks/hooks.json` are auto-discovered. The MCP server is registered inline in `plugin.json` (`mcpServers`), not in a root `.mcp.json`: Claude Code would also load that file as a *project* server for anyone working in this repo, where `${CLAUDE_PLUGIN_ROOT}` doesn't resolve. There is no `commands/` directory — commands are skills with `disable-model-invocation: true`. Don't add a top-level `bin/` (it blocks claude.ai/Cowork installs).
+2. **`@flue-loom/mcp`** (`mcp/`). TypeScript → tsdown → `mcp/dist/server.mjs`, self-contained and **committed**: the manifest runs it straight from the plugin install, where there's no `node_modules`.
 
 ## Flue version pin
 

@@ -144,13 +144,15 @@ describe('flue-talk.mjs', { skip: fixtureInstalled ? false : 'mcp/eval/fixture n
 		});
 		base = `http://localhost:${port}`;
 		server = spawn(process.execPath, [path.join(fixture, 'node_modules', 'vite', 'bin', 'vite.js'), 'dev', '--port', String(port), '--strictPort'], { cwd: fixture, stdio: 'ignore' });
-		for (let i = 0; i < 120; i += 1) {
+		// Vite answers before the Flue runtime finishes booting (503
+		// runtime_unavailable); wait until a conversation route answers.
+		for (let i = 0; i < 240; i += 1) {
 			try {
-				await fetch(base);
-				return;
+				if ((await fetch(`${base}/agents/echo/readiness-probe`)).status !== 503) return;
 			} catch {
-				await new Promise((resolve) => setTimeout(resolve, 250));
+				// not listening yet
 			}
+			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
 		throw new Error('fixture dev server did not start');
 	});

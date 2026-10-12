@@ -69,8 +69,7 @@ Or just describe what you want — "add a tool that files GitHub issues", "why d
 ## Layout
 
 ```
-.claude-plugin/   plugin.json, marketplace.json
-.mcp.json         MCP server registration (mcp/dist/server.mjs)
+.claude-plugin/   plugin.json (also registers the MCP server), marketplace.json
 skills/           flue-* knowledge skills + command skills (init, new, dev, …)
 agents/           specialist subagents
 hooks/            SessionStart + PostToolUse wiring
