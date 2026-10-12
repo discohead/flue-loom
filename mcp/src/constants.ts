@@ -18,3 +18,9 @@ export const PROGRESS_INTERVAL_MS = 250;
 // Messages returned by flue_get_conversation unless the caller asks for more.
 export const DEFAULT_HISTORY_MESSAGES = 20;
 export const MAX_HISTORY_MESSAGES = 200;
+
+// Bounded history reads (Flue >= 2.2): the newest messages fetched to find a
+// settled submission's reply, and the page size when paging back through a
+// transcript for enough visible messages. Older runtimes return everything.
+export const REPLY_WINDOW_MESSAGES = 50;
+export const HISTORY_PAGE_MESSAGES = 100;

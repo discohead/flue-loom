@@ -181,6 +181,19 @@ describe('live fixture', { skip: FIXTURE_READY ? false : 'eval/fixture dependenc
 		assert.equal(history.structuredContent.message_count, 6);
 		assert.equal(history.structuredContent.settlements.length, 3);
 		assert.equal(history.structuredContent.messages.at(-1).tool_calls[0].tool, 'increment');
+		assert.match(history.structuredContent.messages.at(-1).timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+		assert.match(history.structuredContent.settlements.at(-1).timestamp, /^\d{4}-\d{2}-\d{2}T/);
+	});
+
+	it('reads only the newest messages of a conversation', async () => {
+		const recent = await call('flue_get_conversation', { agent: 'counter', conversation_id: 'count-1', last: 2 });
+		const out = recent.structuredContent;
+		assert.deepEqual(out.messages.map((message) => message.role), ['user', 'assistant']);
+		assert.equal(out.messages.at(-1).text, 'count: 3');
+		assert.equal(out.truncated, true);
+		assert.equal(out.message_count, undefined);
+		assert.deepEqual(out.settlements.map((settlement) => settlement.submission_id), [out.messages.at(-1).submission_id]);
+		assert.match(text(recent), /the last 2 message\(s\) — earlier ones not read/);
 	});
 
 	it('returns pending on timeout and re-attaches with flue_read_reply', async () => {

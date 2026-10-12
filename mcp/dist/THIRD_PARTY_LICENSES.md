@@ -3,7 +3,7 @@
 `dist/server.mjs` bundles the following packages. Their licenses follow.
 
 - @durable-streams/client@0.2.7 (Apache-2.0)
-- @flue/sdk@2.1.1 (Apache-2.0)
+- @flue/sdk@2.3.0 (Apache-2.0)
 - @modelcontextprotocol/server@2.1.0 (MIT)
 - zod@4.6.5 (MIT)
 
@@ -35,7 +35,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## @flue/sdk@2.1.1 — Apache-2.0
+## @flue/sdk@2.3.0 — Apache-2.0
 
 Source: https://github.com/withastro/flue
 

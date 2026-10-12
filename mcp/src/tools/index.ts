@@ -1,12 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { AgentSendResult, DeliveredMessage, FlueConversationSnapshot } from '@flue/sdk';
+import type { AgentSendResult, DeliveredMessage } from '@flue/sdk';
 import { FlueApiError } from '@flue/sdk';
 import { z } from 'zod';
 
 import { DEFAULT_HISTORY_MESSAGES, DEFAULT_WAIT_SECONDS, MAX_HISTORY_MESSAGES, MAX_WAIT_SECONDS } from '../constants.ts';
-import { clientFor, describeError, progressReporter, waitForReply } from '../flue.ts';
+import { type RecentMessages, clientFor, describeError, progressReporter, readRecentMessages, waitForReply } from '../flue.ts';
 import {
-	type HistoryMessage,
 	type ReplyOutput,
 	agentsMarkdown,
 	historyMarkdown,
@@ -396,7 +395,7 @@ Args:
 		'flue_get_conversation',
 		{
 			title: 'Get a Flue conversation',
-			description: `Read a conversation's transcript: user and assistant messages, signals, tool calls with inputs/outputs (large values previewed), data parts, and each submission's outcome. Use it to review what an agent did, debug a failed turn, or pick up a conversation someone else started. A conversation that doesn't exist yet returns exists: false.
+			description: `Read a conversation's transcript: user and assistant messages, signals, tool calls with inputs/outputs (large values previewed), data parts, each submission's outcome, and server timestamps. Use it to review what an agent did, debug a failed turn, or pick up a conversation someone else started. Long conversations are read from the newest message back, only as far as needed: message_count (the conversation's total) is present only when all of it was read, and truncated: true means earlier messages were not returned. A conversation that doesn't exist yet returns exists: false.
 
 Args:
   - agent | url | conversation_url, plus conversation_id: the conversation.
@@ -414,7 +413,7 @@ Args:
 				conversation_url: z.string(),
 				conversation_id: z.string(),
 				exists: z.boolean(),
-				message_count: z.number(),
+				message_count: z.number().optional(),
 				messages: z.array(z.record(z.string(), z.unknown())),
 				settlements: z.array(z.record(z.string(), z.unknown())),
 				truncated: z.boolean().optional(),
@@ -425,26 +424,29 @@ Args:
 			let target: ResolvedTarget | undefined;
 			try {
 				target = await resolveTarget(args, { requireConversation: true });
-				let snapshot: FlueConversationSnapshot | undefined;
+				let recent: RecentMessages | undefined;
 				try {
-					snapshot = await clientFor(target).history({ signal: ctx.mcpReq.signal });
+					const keep = (message: { display: string }) => args.include_hidden === true || message.display === 'visible';
+					recent = await readRecentMessages(clientFor(target), args.last ?? DEFAULT_HISTORY_MESSAGES, keep, ctx.mcpReq.signal);
 				} catch (err) {
 					if (!(err instanceof FlueApiError && err.status === 404 && hasEnvelopeType(err.body, 'stream_not_found'))) throw err;
 				}
-				const visible = (snapshot?.messages ?? []).filter((message) => args.include_hidden || message.display === 'visible');
-				const limit = args.last ?? DEFAULT_HISTORY_MESSAGES;
-				const messages: HistoryMessage[] = visible.slice(-limit).map(projectMessage);
+				const messages = (recent?.messages ?? []).map(projectMessage);
+				// A snapshot carries every settlement; past a partial read, keep the returned window's.
+				const windowSubmissions = new Set(recent?.window.map((message) => message.submissionId));
+				const settlements = (recent?.snapshot.settlements ?? []).filter((settlement) => recent?.total !== undefined || windowSubmissions.has(settlement.submissionId));
+				const total = recent ? recent.total : 0;
 				const structured = {
 					agent: target.label,
 					conversation_url: target.conversationUrl,
 					conversation_id: target.conversationId,
-					exists: snapshot !== undefined,
-					message_count: visible.length,
+					exists: recent !== undefined,
+					...(total !== undefined ? { message_count: total } : {}),
 					messages,
-					settlements: (snapshot?.settlements ?? []).map(projectSettlement),
-					...(messages.length < visible.length ? { truncated: true } : {}),
+					settlements: settlements.map(projectSettlement),
+					...(total === undefined || total > messages.length ? { truncated: true } : {}),
 				};
-				return ok(structured, historyMarkdown(target.label, target.conversationUrl, snapshot, messages, visible.length), args.response_format);
+				return ok(structured, historyMarkdown(target.label, target.conversationUrl, recent !== undefined, messages, total, settlements), args.response_format);
 			} catch (err) {
 				return fail(err, target);
 			}
