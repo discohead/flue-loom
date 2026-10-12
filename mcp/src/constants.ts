@@ -1,5 +1,5 @@
 export const SERVER_NAME = 'flue-loom';
-export const SERVER_VERSION = '0.2.0';
+export const SERVER_VERSION = '0.3.0';
 
 // Max characters of text returned in one tool result before truncation.
 export const CHARACTER_LIMIT = 25_000;

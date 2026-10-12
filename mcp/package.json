@@ -1,6 +1,6 @@
 {
 	"name": "@flue-loom/mcp",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "MCP server for talking to Flue 2 agents over their conversation URLs — send messages, wait for replies with progress, read history, abort — from any MCP host (Claude Code, Claude Desktop, Cursor, ChatGPT desktop).",
 	"license": "MIT",
 	"type": "module",

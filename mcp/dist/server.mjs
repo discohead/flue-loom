@@ -23165,7 +23165,7 @@ function toError$1(value) {
 //#endregion
 //#region src/constants.ts
 const SERVER_NAME = "flue-loom";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const CHARACTER_LIMIT = 25e3;
 const MAX_WAIT_SECONDS = 3600;
 //#endregion
