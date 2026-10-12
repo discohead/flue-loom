@@ -29,6 +29,7 @@ http://localhost:5173/agents/support/ticket-42 (created on first message).
   --read <submissionId>  re-attach: wait for an earlier submission and print its reply
   --history              print the conversation transcript and exit
   --all                  with --history, include hidden/diagnostic messages
+  --limit <n>            with --history, only the newest n messages (hidden ones count)
   --abort                abort in-flight and queued work, then exit
   --token <token>        bearer token (default: $FLUE_TOKEN)
   --token-env <VAR>      read the bearer token from this environment variable
@@ -54,6 +55,7 @@ const { values, positionals } = parseArgs({
 		read: { type: 'string' },
 		history: { type: 'boolean' },
 		all: { type: 'boolean' },
+		limit: { type: 'string' },
 		abort: { type: 'boolean' },
 		token: { type: 'string' },
 		'token-env': { type: 'string' },
@@ -92,9 +94,17 @@ const progress = values.quiet || values.json ? () => {} : (text) => process.stde
 const streamText = !values.quiet && !values.json && process.stderr.isTTY === true;
 
 if (values.history) {
-	const snapshot = await getHistory();
+	const limit = values.limit === undefined ? undefined : Number(values.limit);
+	if (limit !== undefined && !(Number.isInteger(limit) && limit > 0)) fail(`--limit must be a positive integer: ${values.limit}`);
+	const snapshot = await getHistory(limit);
+	let partial = typeof snapshot.before === 'string';
+	// Runtimes before Flue 2.2 ignore ?limit and return everything (no `before`).
+	if (limit !== undefined && snapshot.before === undefined && (snapshot.messages ?? []).length > limit) {
+		snapshot.messages = snapshot.messages.slice(-limit);
+		partial = true;
+	}
 	if (values.json) console.log(JSON.stringify(snapshot, null, 2));
-	else console.log(renderTranscript(snapshot, values.all));
+	else console.log(renderTranscript(snapshot, values.all, partial));
 	process.exit(0);
 }
 
@@ -145,8 +155,7 @@ await finish({ submissionId: admission.submissionId, offset: admission.offset, u
 
 async function finish({ submissionId, offset, uid }) {
 	const settlement = await waitForSettlement(submissionId, offset);
-	const snapshot = await getHistory();
-	const reply = readSubmissionReply(snapshot, submissionId);
+	const reply = await readReply(submissionId);
 	const envelope = {
 		conversationUrl: url,
 		submissionId,
@@ -224,9 +233,20 @@ async function waitForSettlement(submissionId, startOffset) {
 	process.exit(124);
 }
 
-async function getHistory() {
-	const res = await request('GET', url);
+async function getHistory(limit) {
+	const res = await request('GET', limit === undefined ? url : `${url}?limit=${limit}`);
 	return res.json();
+}
+
+// A settled submission's reply sits at the head: read the newest messages
+// (Flue >= 2.2), and the whole conversation only when it isn't among them.
+async function readReply(submissionId) {
+	const window = await getHistory(50);
+	const answeredBy = window.settlements?.find((entry) => entry.submissionId === submissionId)?.answeredBySubmissionId;
+	const holdsReply = (window.messages ?? []).some(
+		(message) => message.role === 'assistant' && (message.submissionId === submissionId || (answeredBy !== undefined && message.submissionId === answeredBy)),
+	);
+	return readSubmissionReply(typeof window.before !== 'string' || holdsReply ? window : await getHistory(), submissionId);
 }
 
 async function request(method, target, json) {
@@ -265,7 +285,8 @@ async function request(method, target, json) {
 
 // Mirrors readSubmissionReply() from @flue/sdk: the submission's final
 // assistant message, else the message that answered it when it joined a
-// busy response, else the conversation's last assistant message.
+// busy response, else — only when the snapshot reaches the start of the
+// conversation — its last assistant message.
 function readSubmissionReply(snapshot, submissionId) {
 	const assistant = (snapshot.messages ?? []).filter((message) => message.role === 'assistant');
 	let reply = assistant.filter((message) => message.submissionId === submissionId).at(-1);
@@ -274,7 +295,9 @@ function readSubmissionReply(snapshot, submissionId) {
 		reply =
 			settlement?.answeredBySubmissionId !== undefined
 				? assistant.filter((message) => message.submissionId === settlement.answeredBySubmissionId).at(-1)
-				: assistant.at(-1);
+				: typeof snapshot.before !== 'string'
+					? assistant.at(-1)
+					: undefined;
 	}
 	if (!reply) return { text: '', data: {} };
 	const data = {};
@@ -292,12 +315,14 @@ function readSubmissionReply(snapshot, submissionId) {
 	};
 }
 
-function renderTranscript(snapshot, all) {
-	const lines = [`${url}  (${snapshot.messages?.length ?? 0} messages)`];
+function renderTranscript(snapshot, all, partial) {
+	const count = snapshot.messages?.length ?? 0;
+	const lines = [`${url}  (${partial ? `newest ${count} messages; earlier ones not shown` : `${count} messages`})`];
 	for (const message of snapshot.messages ?? []) {
 		if (!all && message.display !== 'visible') continue;
 		const signal = message.signal ? ` <${message.signal.tagName ?? 'signal'}${Object.entries(message.signal.attributes ?? {}).map(([k, v]) => ` ${k}="${v}"`).join('')}>` : '';
-		lines.push('', `${message.role} [${message.purpose}${message.display === 'visible' ? '' : `, ${message.display}`}]${signal}`);
+		const time = message.timestamp ? `  ${message.timestamp.replace('T', ' ').replace(/\.\d+Z$/, 'Z')}` : '';
+		lines.push('', `${message.role} [${message.purpose}${message.display === 'visible' ? '' : `, ${message.display}`}]${signal}${time}`);
 		for (const part of message.parts) {
 			if (part.type === 'text') lines.push(`  ${part.text.replace(/\n/g, '\n  ')}`);
 			else if (part.type === 'reasoning') lines.push(`  (reasoning, ${part.text.length} chars)`);

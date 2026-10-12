@@ -1,7 +1,7 @@
 {
 	"name": "flue-loom",
 	"displayName": "Flue Loom",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Build, run, debug, and ship Flue 2 agents (withastro/flue) from Claude Code: version-aware skills, specialist subagents, /flue-loom commands, edit-time lint, and an MCP server that talks to any deployed Flue agent.",
 	"author": {
 		"name": "Jared McFarland"

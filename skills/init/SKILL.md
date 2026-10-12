@@ -50,7 +50,7 @@ Use the package manager the user already uses (their request, a lockfile, or a w
 
 1. `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-inspect.mjs <dir>` — target, versions, the `Hello` agent, its `/agents/hello` mount, clean lint.
 2. `npx tsc --noEmit` in `<dir>`.
-3. With a key in place: `npx flue run src/agents/hello.ts -m "Say hello!"`. Without one, say it's pending.
+3. With a key in place: `npx @flue/cli run src/agents/hello.ts -m "Say hello!"`. Without one, say it's pending.
 
 ## 7. Report
 

@@ -17,7 +17,7 @@ import triage from '../skills/triage/SKILL.md';
 import { searchIssues } from '../tools/search-issues.ts';
 
 export function Triage({ id }: AgentProps) {
-	useModel('anthropic/claude-sonnet-5'); // required, exactly once per render
+	useModel('anthropic/claude-sonnet-5-5'); // required, exactly once per render
 	useSandbox(local()); // optional: files + shell (+ read/write/edit/bash/grep/glob tools)
 	useSkill(triage); // progressive-disclosure expertise
 	useTool(searchIssues); // application code the model can call
@@ -67,11 +67,11 @@ There are **no** `flue dev`/`flue build` commands (Vite owns them), no `triggers
 
 ## Version-matched documentation (prefer it over memory)
 
-flue-loom was verified against **Flue 2.1.1**. The installed `@flue/cli` ships the docs for *its* version as Markdown:
+flue-loom was verified against **Flue 2.3.0**. The installed `@flue/cli` ships the docs for *its* version as Markdown:
 
-- `npx flue docs search <query>` → JSON results (`path`, `title`, `excerpt`) → `npx flue docs read <path>` (e.g. `guide/tools`). Use `pnpm exec`/`yarn`/`bunx` to match the project. Don't pipe `flue docs` (list) into `head` — 2.1.1 crashes on EPIPE; `search`/`read` are fine.
+- `npx @flue/cli docs search <query>` → JSON results (`path`, `title`, `excerpt`) → `npx @flue/cli docs read <path>` (e.g. `guide/tools`). With other package managers: `pnpm exec flue`, `yarn flue`, `bunx @flue/cli`. Keep the scoped name with `npx`/`bunx`: in a project without `@flue/cli` installed, a bare `npx flue` downloads and runs an unrelated npm package that happens to be called `flue`. Don't pipe `flue docs` (list) into `head` — it crashes on EPIPE (still in 2.3.0); `search`/`read` are fine.
 - Read-only alternative (no Bash): Grep/Read `node_modules/@flue/cli/docs/{guide,reference,sdk,cli,ecosystem}/**/*.md`.
 - Valid model specifiers for the installed version: `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-models.mjs [filter|--check provider/model]`.
-- Integrations (channels, sandboxes, databases, tooling) come as **blueprints** — Markdown guides for coding agents: `npx flue add` lists them; `npx flue add <kind> <name> --print` prints one to follow (`/flue-loom:add`).
+- Integrations (channels, sandboxes, databases, tooling) come as **blueprints** — Markdown guides for coding agents: `npx @flue/cli add` lists them; `npx @flue/cli add <kind> <name> --print` prints one to follow (`/flue-loom:add`).
 
 When a skill here and the installed docs disagree, the installed docs win.

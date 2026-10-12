@@ -1,6 +1,6 @@
 // Projections of SDK objects into tool output, plus the Markdown text form.
 
-import type { FlueConversationMessage, FlueConversationSettlement, FlueConversationSnapshot } from '@flue/sdk';
+import type { FlueConversationMessage, FlueConversationSettlement } from '@flue/sdk';
 
 import { CHARACTER_LIMIT } from './constants.ts';
 import type { ToolActivity } from './flue.ts';
@@ -86,6 +86,7 @@ export interface HistoryMessage {
 	signal?: { tag_name?: string; attributes?: Record<string, string> };
 	settlement?: 'failed' | 'aborted';
 	metadata?: Record<string, unknown>;
+	timestamp?: string;
 }
 
 export function projectMessage(message: FlueConversationMessage): HistoryMessage {
@@ -125,6 +126,7 @@ export function projectMessage(message: FlueConversationMessage): HistoryMessage
 		...(message.signal ? { signal: { tag_name: message.signal.tagName, attributes: message.signal.attributes } } : {}),
 		...(message.settlement ? { settlement: message.settlement.outcome } : {}),
 		...(message.metadata ? { metadata: preview(message.metadata) as Record<string, unknown> } : {}),
+		...(message.timestamp ? { timestamp: message.timestamp } : {}),
 	};
 }
 
@@ -134,24 +136,35 @@ export function projectSettlement(settlement: FlueConversationSettlement): Recor
 		outcome: settlement.outcome,
 		...(settlement.answeredBySubmissionId ? { answered_by_submission_id: settlement.answeredBySubmissionId } : {}),
 		...(settlement.error !== undefined ? { error: preview(settlement.error) } : {}),
+		...(settlement.timestamp ? { timestamp: settlement.timestamp } : {}),
 	};
 }
 
+/**
+ * `total` is the conversation's message count, known when all of it was read;
+ * `settlements` cover the returned window (every one, after a full read).
+ */
 export function historyMarkdown(
 	label: string,
 	conversationUrl: string,
-	snapshot: FlueConversationSnapshot | undefined,
+	exists: boolean,
 	messages: HistoryMessage[],
-	total: number,
+	total: number | undefined,
+	settlements: FlueConversationSettlement[],
 ): string {
-	if (!snapshot) return `**${label}** · no conversation exists at ${conversationUrl} yet — flue_send_message creates it.`;
-	const lines = [`**${label}** · ${conversationUrl} — ${total} message(s)${messages.length < total ? `, showing the last ${messages.length}` : ''}, ${snapshot.settlements.length} settled submission(s)`, ''];
+	if (!exists) return `**${label}** · no conversation exists at ${conversationUrl} yet — flue_send_message creates it.`;
+	const count =
+		total === undefined
+			? `the last ${messages.length} message(s) — earlier ones not read (raise \`last\` for more)`
+			: `${total} message(s)${messages.length < total ? `, showing the last ${messages.length}` : ''}`;
+	const lines = [`**${label}** · ${conversationUrl} — ${count}, ${settlements.length} settled submission(s)`, ''];
 	for (const message of messages) {
 		const tags: string[] = [message.role];
 		if (message.purpose !== message.role) tags.push(message.purpose);
 		if (message.signal?.tag_name) tags.push(`signal ${message.signal.tag_name}`);
 		if (message.submission_id) tags.push(message.submission_id);
 		if (message.settlement) tags.push(message.settlement);
+		if (message.timestamp) tags.push(message.timestamp.replace(/\.\d+Z$/, 'Z'));
 		lines.push(`[${tags.join(' · ')}] ${message.text.trim() || (message.tool_calls ? '' : '_(no text)_')}`.trimEnd());
 		for (const call of message.tool_calls ?? []) {
 			const state = call.state === 'output-available' ? '✓' : call.state === 'output-error' ? `✗ ${call.error ?? ''}` : '…';
@@ -160,7 +173,7 @@ export function historyMarkdown(
 		for (const [name, values] of Object.entries(message.data ?? {})) lines.push(`    data ${name} ×${values.length}`);
 		for (const file of message.files ?? []) lines.push(`    file ${file.filename ?? file.media_type}`);
 	}
-	const failed = snapshot.settlements.filter((settlement) => settlement.outcome !== 'completed');
+	const failed = settlements.filter((settlement) => settlement.outcome !== 'completed');
 	if (failed.length > 0) {
 		lines.push('', `Unsuccessful submissions: ${failed.map((settlement) => `${settlement.submissionId} ${settlement.outcome}`).join(', ')}`);
 	}

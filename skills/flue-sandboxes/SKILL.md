@@ -16,7 +16,7 @@ import { bash, useModel, useSandbox } from '@flue/runtime';
 import { Bash, InMemoryFs } from 'just-bash'; // add just-bash to dependencies
 
 export function DataWorker() {
-	useModel('anthropic/claude-haiku-4-5');
+	useModel('anthropic/claude-haiku-5-5');
 	useSandbox(
 		bash(
 			() =>
@@ -44,9 +44,10 @@ Real filesystem and real processes; **no isolation** — for dev tools, CI jobs,
 ## Remote sandboxes
 
 ```bash
-npx flue add sandbox daytona --print   # blueprint → src/sandboxes/daytona.ts + provider SDK
-npx flue add                           # list: boxd, cloudflare, cloudflare-computer, daytona, e2b, exedev, islo, mirage, modal, vercel, …
-npx flue add sandbox https://docs.provider.dev --print   # generic guide for an unlisted provider
+npx @flue/cli add sandbox daytona --print   # blueprint → src/sandboxes/daytona.ts + provider SDK
+npx @flue/cli add                           # list: boxd, cloudflare, cloudflare-computer, daytona, e2b, exedev, islo, mirage, modal, vercel, …
+npx @flue/cli add sandbox https://docs.provider.dev --print   # generic guide for an unlisted provider
+npx @flue/cli update sandbox e2b --print    # updated guide for an installed blueprint (E2B v2, Flue 2.3: non-zero exits resolve with exitCode)
 ```
 
 Adapters are thin: your code creates/reuses/deletes provider sandboxes; Flue never destroys provider infrastructure. Create lazily **inside** `createSandbox(options)` — never at module scope — and key on `options.id` (the conversation id) to give each conversation a durable workspace:

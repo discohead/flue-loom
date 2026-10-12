@@ -14,7 +14,7 @@ import { type AgentProps, useInstruction, useModel } from '@flue/runtime';
 import * as v from 'valibot';
 
 export function SupportAgent({ id }: AgentProps) {
-	useModel('anthropic/claude-sonnet-5');
+	useModel('anthropic/claude-sonnet-5-5');
 	useInstruction('Never promise refunds; escalate instead.'); // appended after the returned text
 	return `You handle support ticket ${id}. Be concise and accurate.`;
 }
@@ -49,17 +49,19 @@ Identity = the build-stamped name → the `agentName` static → the function's 
 `DeliveredMessage` is one of:
 
 ```ts
-{ kind: 'user', body: string, attachments?: [{ type: 'image', data: base64, mimeType, filename? }] }
+{ kind: 'user', body: string, attachments?: [{ type: 'image', data: base64, mimeType, filename? } | { type: 'document', data: base64, mimeType: 'application/pdf', filename? }] }
 { kind: 'signal', type: string, body: string, attributes?: Record<string, string>, tagName?: string }
 ```
 
 Use `user` for a person talking 1:1 to the agent; `signal` for webhooks, schedules, and multi-party surfaces (renders as `<signal type="…" k="v">body</signal>`). A bare string is shorthand for a user message in `dispatch()`/`init()`/`flue run` — **not** on the HTTP wire.
 
+Attachments are base64, ≤ 14 MiB of base64 each. PDF documents (Flue ≥ 2.2) reach the model as native document content on Anthropic Messages, Google, and OpenAI Responses models; other model APIs get a text placeholder instead. Other document MIME types are rejected (400).
+
 ## Running an agent (all hit the same durable path)
 
 | Surface | How |
 |---|---|
-| CLI (no server) | `npx flue run src/agents/support.ts -m "Hi" [--id c1] [--data '{…}'] [--new \| --uid u] [--json] [--name Agent]` — `--name` picks one agent from a multi-agent module; `--json` prints `{ id, agent, submissionId, outcome, message \| error, uid }`; exit 0/1/130 |
+| CLI (no server) | `npx @flue/cli run src/agents/support.ts -m "Hi" [--id c1] [--data '{…}'] [--new \| --uid u] [--json] [--name Agent]` — `--name` picks one agent from a multi-agent module; `--json` prints `{ id, agent, submissionId, outcome, message \| error, uid }`; exit 0/1/130 |
 | HTTP | mount in `app.ts`, then `POST <mount>/<id>` with a `DeliveredMessage` (202) and `GET <mount>/<id>` — see `flue-routing`, `flue-client`, `/flue-loom:talk` |
 | In-app | `await dispatch(SupportAgent, { id, message, initialData?, uid? })` → receipt `{ submissionId, acceptedAt, uid }` (fire-and-forget) |
 | Await a reply | `const h = init(SupportAgent, { id }); const r = await h.read(await h.dispatch('Hi'));` → `{ text, data, metadata, submissionId, uid }` |
@@ -74,6 +76,6 @@ Use `user` for a person talking 1:1 to the agent; `signal` for webhooks, schedul
 1. `'use agent'` first; exported PascalCase function; `useModel()` once with a specifier that exists (`node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-models.mjs --check <spec>`).
 2. Only the capabilities it needs (sandbox, tools, skills, subagents).
 3. HTTP-reachable? Mount it in `app.ts` behind auth. Cloudflare? Append a `new_sqlite_classes` migration for `Flue<Identity>Agent`.
-4. Smoke test: `npx flue run <module> -m "…"`, then `check:types`, then `vite build` if deployed.
+4. Smoke test: `npx @flue/cli run <module> -m "…"`, then `check:types`, then `vite build` if deployed.
 
 Templates: `${CLAUDE_PLUGIN_ROOT}/templates/` (`/flue-loom:new`). Docs: `flue docs read guide/building-agents`, `reference/agent-api`, `cli/run`.

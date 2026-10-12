@@ -15,7 +15,7 @@ The installed `@flue/cli` ships the docs for its exact version, so these answers
 
 ## Find
 
-- No arguments → list the pages: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/flue-cli.sh docs` (don't pipe it into `head`; 2.1.1 crashes with EPIPE — redirect to a file or read it whole).
+- No arguments → list the pages: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/flue-cli.sh docs` (don't pipe it into `head`; the CLI crashes with EPIPE, still in 2.3.0 — redirect to a file or read it whole).
 - A page path (`guide/sandboxes`, `reference/agent-api`, `ecosystem/deploy/fly`) → `bash ${CLAUDE_PLUGIN_ROOT}/scripts/flue-cli.sh docs read <path>`.
 - Search terms or a question → `bash ${CLAUDE_PLUGIN_ROOT}/scripts/flue-cli.sh docs search "<terms>"`, then read the best one or two pages.
 - Faster for targeted lookups inside a project: Grep `node_modules/@flue/cli/docs/**/*.md` directly (sections: `guide/`, `reference/`, `cli/`, `sdk/`, `ecosystem/{channels,databases,deploy,sandboxes,tooling}`).

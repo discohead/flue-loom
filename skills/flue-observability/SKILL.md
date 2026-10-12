@@ -46,8 +46,8 @@ Sum usage at one level only (`turn` leaves, or `operation` roll-ups). Live obser
 ## Integrations (`instrument()` = observer + execution interceptor for spans)
 
 ```bash
-npx flue add tooling sentry --print       # issues for terminal failures, Sentry Logs, optional AI traces
-npx flue add tooling braintrust --print   # content-bearing LLM traces for inspection/evals
+npx @flue/cli add tooling sentry --print       # issues for terminal failures, Sentry Logs, optional AI traces
+npx @flue/cli add tooling braintrust --print   # content-bearing LLM traces for inspection/evals
 ```
 
 ```ts

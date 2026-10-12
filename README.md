@@ -4,7 +4,7 @@ A Claude Code plugin — plus a portable MCP server — for building, running, d
 
 Flue 2 agents are plain TypeScript functions in `'use agent'` modules, composed with hooks (`useModel`, `useTool`, `useSandbox`, `useSubagent`, …), served by Vite, and reached over durable conversation URLs. flue-loom gives Claude Code the version-matched knowledge, workflows, and guardrails to work on that model fluently, and gives every MCP host a way to talk to the agents you build.
 
-Verified against Flue **2.1.1** and Claude Code **2.1.x**.
+Verified against Flue **2.3.0** and Claude Code **2.1.x**.
 
 ## What's inside
 
@@ -84,7 +84,7 @@ mcp/              @flue-loom/mcp — the MCP server, its tests, MCPB bundle, fix
 See [.claude/CLAUDE.md](.claude/CLAUDE.md) for maintainer notes. In short:
 
 ```bash
-node --test scripts/test/*.test.mjs                      # lint, hooks, CLI tools (53 tests)
+node --test scripts/test/*.test.mjs                      # lint, hooks, CLI tools (55 tests)
 cd mcp && pnpm install && pnpm build && pnpm test        # MCP server (needs eval/fixture: npm install)
 claude plugin validate .claude-plugin/plugin.json --strict
 scripts/run-evals.sh --runs 1                            # plugin evals (uses your Claude credential)

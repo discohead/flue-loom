@@ -12,7 +12,7 @@ allowed-tools:
 
 Arguments: `$ARGUMENTS`
 
-Templates live in `${CLAUDE_PLUGIN_ROOT}/templates/` and are verified against Flue 2.1.1 (type-check, build, lint). Read the template, fill every `{{placeholder}}`, adapt it to the request, and write it into the project. Nothing unreplaced may remain.
+Templates live in `${CLAUDE_PLUGIN_ROOT}/templates/` and are verified against Flue 2.3.0 (type-check, build, lint). Read the template, fill every `{{placeholder}}`, adapt it to the request, and write it into the project. Nothing unreplaced may remain.
 
 ## 1. Orient
 
@@ -42,7 +42,7 @@ Follow the project's existing directory names if they differ. Don't use `agent-w
 - `{{Name}}` — PascalCase. For agents it is the **durable identity** (URL-safe, matches `^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)*$`, unique across the project). Renaming later orphans stored conversations and, on Cloudflare, the Durable Object class.
 - `{{name}}` — kebab-case file/directory name. For skills it must equal the directory name (≤ 64 chars, lowercase, single hyphens).
 - `{{exportName}}` — camelCase export; `{{tool_name}}` — the snake_case name the model sees. Never `task`, `activate_skill`, `read_skill_resource`, `finish`, `give_up`, or a sandbox tool name (`read`, `write`, `edit`, `bash`, `grep`, `glob`) when a sandbox is mounted.
-- `{{MODEL}}` — `provider/model-id`; default `anthropic/claude-sonnet-5` (`claude-haiku-4-5` for cheap/fast work, `claude-opus-5` for hard reasoning). Check it: `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-models.mjs --check <spec>`.
+- `{{MODEL}}` — `provider/model-id`; default `anthropic/claude-sonnet-5-5` (`claude-haiku-5-5` for cheap/fast work, `claude-opus-5-5` for hard reasoning). Check it: `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-models.mjs --check <spec>` — the 5.5 ids need Flue ≥ 2.3, so on an older install use what `--check` suggests.
 - `{{DESCRIPTION}}` — model-facing: what it does, when to use it, what it returns. `{{INSTRUCTIONS}}` — the real instructions from the request, not filler (escape backticks and `${` inside template literals).
 - Replace the template's example schema, state, and bodies with what the request needs; keep the explanatory comments that still apply and drop the rest.
 
@@ -57,6 +57,6 @@ Follow the project's existing directory names if they differ. Don't use `agent-w
 
 1. The edit hook lints each file as you write it — fix every ✗ it reports.
 2. `npx tsc --noEmit` (or the project's `check:types`).
-3. Agents: `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-inspect.mjs` shows it with the expected mount; with a key, `npx flue run <src>/agents/<name>.ts -m "…"`. Tests: `npx vitest run`.
+3. Agents: `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-inspect.mjs` shows it with the expected mount; with a key, `npx @flue/cli run <src>/agents/<name>.ts -m "…"`. Tests: `npx vitest run`.
 
 Report the files created or changed, how to reach the component (mount URL, `flue run` command, or which agent mounts it), and anything left for the user (API keys, secrets).

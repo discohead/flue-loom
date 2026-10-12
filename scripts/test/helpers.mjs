@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 /** Create a temp project from a { relativePath: contents } map. Returns its root. */
-export function project(files, { deps = { '@flue/runtime': '^2.1.1', '@flue/vite': '^2.1.1' } } = {}) {
+export function project(files, { deps = { '@flue/runtime': '^2.3.0', '@flue/vite': '^2.3.0' } } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'flue-loom-test-'));
 	const all = { 'package.json': JSON.stringify({ name: 'fixture', type: 'module', dependencies: deps }), ...files };
 	for (const [rel, contents] of Object.entries(all)) {

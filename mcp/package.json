@@ -1,6 +1,6 @@
 {
 	"name": "@flue-loom/mcp",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "MCP server for talking to Flue 2 agents over their conversation URLs — send messages, wait for replies with progress, read history, abort — from any MCP host (Claude Code, Claude Desktop, Cursor, ChatGPT desktop).",
 	"license": "MIT",
 	"type": "module",
@@ -34,7 +34,7 @@
 	},
 	"devDependencies": {
 		"@anthropic-ai/mcpb": "^2.1.2",
-		"@flue/sdk": "^2.1.1",
+		"@flue/sdk": "^2.3.0",
 		"@modelcontextprotocol/client": "^2.1.0",
 		"@modelcontextprotocol/sdk": "^1.30.1",
 		"@modelcontextprotocol/server": "^2.1.0",

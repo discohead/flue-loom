@@ -4,14 +4,18 @@
 import {
 	type AgentReadResult,
 	type AgentSendResult,
+	type AgentSubmissionReply,
 	type ConversationStreamChunk,
 	type FlueClient,
+	type FlueConversationMessage,
+	type FlueConversationSnapshot,
 	FlueApiError,
 	FlueExecutionError,
 	createFlueClient,
+	readSubmissionReply,
 } from '@flue/sdk';
 
-import { PROGRESS_INTERVAL_MS } from './constants.ts';
+import { HISTORY_PAGE_MESSAGES, PROGRESS_INTERVAL_MS, REPLY_WINDOW_MESSAGES } from './constants.ts';
 import { type ResolvedTarget, TargetError } from './target.ts';
 
 export function clientFor(target: ResolvedTarget): FlueClient {
@@ -95,26 +99,91 @@ export async function waitForReply(
 	const timer = setTimeout(() => timeout.abort(new Error('wait timed out')), options.timeoutMs);
 	const signal = AbortSignal.any([options.signal, timeout.signal]);
 	let lastTextProgress = 0;
+	const onEvent = async (chunk: ConversationStreamChunk) => {
+		const line = tracker.observe(chunk);
+		if (!options.progress) return;
+		if (line) {
+			await options.progress(line);
+		} else if (chunk.type === 'message-delta' && chunk.kind === 'text' && Date.now() - lastTextProgress >= PROGRESS_INTERVAL_MS) {
+			lastTextProgress = Date.now();
+			await options.progress(`writing reply (${tracker.textChars} chars)`);
+		}
+	};
 	try {
-		const reply = await client.read(target, {
-			signal,
-			onEvent: async (chunk) => {
-				const line = tracker.observe(chunk);
-				if (!options.progress) return;
-				if (line) {
-					await options.progress(line);
-				} else if (chunk.type === 'message-delta' && chunk.kind === 'text' && Date.now() - lastTextProgress >= PROGRESS_INTERVAL_MS) {
-					lastTextProgress = Date.now();
-					await options.progress(`writing reply (${tracker.textChars} chars)`);
-				}
-			},
-		});
-		return { kind: 'settled', reply, tracker };
+		if (typeof target === 'string') {
+			// Re-attach by id: read() follows the stream from its origin.
+			return { kind: 'settled', reply: await client.read(target, { signal, onEvent }), tracker };
+		}
+		// read() would fetch the whole transcript for a reply that sits at its head.
+		await client.wait(target, { signal, onEvent });
+		const reply = await readReply(client, submissionId, signal);
+		return { kind: 'settled', reply: { ...reply, submissionId, ...(target.uid !== undefined ? { uid: target.uid } : {}) }, tracker };
 	} catch (err) {
 		if (timeout.signal.aborted && !options.signal.aborted) return { kind: 'timeout', tracker };
 		throw err;
 	} finally {
 		clearTimeout(timer);
+	}
+}
+
+/**
+ * A settled submission's reply, read from the newest messages. Falls back to
+ * the whole conversation when the reply isn't in that window — or for a
+ * legacy settlement, whose reply readSubmissionReply() only guesses from a
+ * complete transcript.
+ */
+async function readReply(client: FlueClient, submissionId: string, signal: AbortSignal): Promise<AgentSubmissionReply> {
+	const window = await client.history({ limit: REPLY_WINDOW_MESSAGES, signal });
+	if (typeof window.before !== 'string' || holdsReply(window, submissionId)) return readSubmissionReply(window, submissionId);
+	return readSubmissionReply(await client.history({ signal }), submissionId);
+}
+
+function holdsReply(snapshot: FlueConversationSnapshot, submissionId: string): boolean {
+	const answeredBy = snapshot.settlements.find((settlement) => settlement.submissionId === submissionId)?.answeredBySubmissionId;
+	return snapshot.messages.some((message) => message.role === 'assistant' && (message.submissionId === submissionId || (answeredBy !== undefined && message.submissionId === answeredBy)));
+}
+
+export interface RecentMessages {
+	/** The newest read; its settlements cover the whole conversation. */
+	snapshot: FlueConversationSnapshot;
+	/** Up to `count` of the newest messages that pass `keep`, oldest first. */
+	messages: FlueConversationMessage[];
+	/** Every message from the oldest returned one through the head, kept or not. */
+	window: FlueConversationMessage[];
+	/** How many messages in the whole conversation pass `keep` — known only when all of it was read. */
+	total?: number;
+}
+
+/**
+ * The newest `count` messages passing `keep`, paging back through bounded
+ * history reads only as far as needed. A runtime that predates bounded reads
+ * returns the whole conversation at once. A cursor invalidated by a stream
+ * reset (410 history_cursor_not_found) restarts the read once.
+ */
+export async function readRecentMessages(
+	client: FlueClient,
+	count: number,
+	keep: (message: FlueConversationMessage) => boolean,
+	signal: AbortSignal,
+): Promise<RecentMessages> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			const snapshot = await client.history({ limit: count, signal });
+			let read = snapshot.messages;
+			let cursor = snapshot.before;
+			while (typeof cursor === 'string' && read.filter(keep).length < count) {
+				const page = await client.historyBefore(cursor, { limit: Math.max(count, HISTORY_PAGE_MESSAGES), signal });
+				read = [...page.messages, ...read];
+				cursor = page.before;
+			}
+			const kept = read.filter(keep);
+			const messages = kept.slice(-count);
+			const [oldest] = messages;
+			const window = oldest ? read.slice(read.indexOf(oldest)) : [];
+			return { snapshot, messages, window, ...(typeof cursor !== 'string' ? { total: kept.length } : {}) };
+		} catch (err) {
+			if (attempt > 0 || !(err instanceof FlueApiError && err.status === 410)) throw err;
+		}
 	}
 }
 
@@ -178,6 +247,7 @@ export function describeError(err: unknown, target?: ResolvedTarget): DescribedE
 			submission_conflict: `That idempotency_key was already used for a different message${typeof meta?.submissionId === 'string' ? ` (submission ${meta.submissionId})` : ''}. Use a fresh key to send again.`,
 			method_not_allowed: 'The route exists but does not accept this method.',
 			runtime_unavailable: 'The runtime is temporarily unavailable (a dev server reload?). Retry in a moment.',
+			history_cursor_not_found: 'The conversation\'s stream was reset while its history was being read. Retry.',
 			internal_error: `The server hit an internal error${err.ref ? ` — quote ref ${err.ref} when reporting it` : ''}.`,
 		};
 		const hint = type ? hints[type] : undefined;

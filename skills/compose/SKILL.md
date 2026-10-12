@@ -33,7 +33,7 @@ Pass each subagent the spec (verbatim) and the project root; ask for the list of
 1. Install any dependencies the subagents list (the project's package manager).
 2. `node ${CLAUDE_PLUGIN_ROOT}/scripts/flue-inspect.mjs` — every new agent present, mounted or dispatched as designed, lint clean; Cloudflare migrations added.
 3. `npx tsc --noEmit`.
-4. Exercise it: `npx flue run <entry agent> -m "<representative request>" --json` with a model key, or `/flue-loom:dev` + `/flue-loom:talk`. Tools with logic get a Vitest test (templates `tool.test.ts.tmpl` + `vitest.config.ts.tmpl` in `${CLAUDE_PLUGIN_ROOT}/templates/`).
+4. Exercise it: `npx @flue/cli run <entry agent> -m "<representative request>" --json` with a model key, or `/flue-loom:dev` + `/flue-loom:talk`. Tools with logic get a Vitest test (templates `tool.test.ts.tmpl` + `vitest.config.ts.tmpl` in `${CLAUDE_PLUGIN_ROOT}/templates/`).
 5. Fix what fails before reporting.
 
 ## 4. Report

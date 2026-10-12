@@ -7,13 +7,13 @@
 		"check:types": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "^0.83.0",
-		"@flue/runtime": "^2.1.1",
+		"@earendil-works/pi-ai": "^1.1.0",
+		"@flue/runtime": "^2.3.0",
 		"hono": "^4.12.32",
 		"valibot": "^1.5.0"
 	},
 	"devDependencies": {
-		"@flue/vite": "^2.1.1",
+		"@flue/vite": "^2.3.0",
 		"@types/node": "^22.20.4",
 		"typescript": "^7.0.2",
 		"vite": "^8.0.14"

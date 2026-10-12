@@ -31,7 +31,7 @@ Flue 2 stores schema version 8; any pre-2.0 database is **rejected at startup** 
 7. **Routing**: write `src/app.ts` mounts (keep old `/agents/<name>` paths if clients depend on them) plus auth middleware; add `db.ts` on Node.
 8. **Schedules**: `cron: '…'` triggers → croner in `app.ts` (Node) or Cron Triggers + `scheduled()` in `src/cloudflare.ts` (Cloudflare), both calling `dispatch()`.
 9. **Clients**: rewrite HTTP callers for the conversation protocol (`POST` → 202 admission, then `read()`/history) — use `@flue/sdk` (`flue-client`). There is no `GET /agents` manifest and no synchronous result mode.
-10. **Verify**: plugin lint clean on every module, `check:types`, `npx flue run <module> -m "…"` per agent, `vite build`, then `flue-talk` against `vite dev`; Cloudflare: `wrangler deploy --dry-run`.
+10. **Verify**: plugin lint clean on every module, `check:types`, `npx @flue/cli run <module> -m "…"` per agent, `vite build`, then `flue-talk` against `vite dev`; Cloudflare: `wrangler deploy --dry-run`.
 
 Work incrementally — convert and verify one agent end-to-end before the rest. Keep the old app deployable until clients have moved.
 

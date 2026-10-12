@@ -13,7 +13,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** The Flue release this plugin's skills and templates were verified against. */
-export const TESTED_FLUE_VERSION = '2.1.1';
+export const TESTED_FLUE_VERSION = '2.3.0';
 
 /** Mirrors AGENT_IDENTITY_PATTERN from @flue/runtime. */
 export const AGENT_IDENTITY_PATTERN = /^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$/;

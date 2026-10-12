@@ -55,7 +55,7 @@ One-way and model-invisible; each write streams immediately as a `data-orderCard
 | Hook | When | Contract |
 |---|---|---|
 | `useAgentStart(async (ctx) => …)` | once per delivered message, before the model reads it | awaited, may be async; `ctx.harness`, `ctx.append(signal)`, `ctx.log`, `ctx.signal`. Load data, seed files, set state. Sibling callbacks run concurrently. |
-| `useAgentFinish(async (ctx) => …)` | at every would-stop point | awaited; `ctx.response.toolCalls/usage`; `ctx.append({ kind: 'signal', type, body })` sends the model back to work (max 32 continuations per response). |
+| `useAgentFinish(async (ctx) => …)` | at every would-stop point | awaited; `ctx.response.toolCalls/usage`; `ctx.append({ kind: 'signal', type, body })` sends the model back to work (max 32 continuations per response). The agent re-renders before each cycle, so state written during the response is visible (broken in 2.2.x — a persistent-state guard never fires; upgrade to ≥ 2.3). |
 | `useResponseStart((ctx) => ({…}))` | once, true start of a response | **synchronous**; returned object deep-merges into message `metadata` |
 | `useResponseFinish((ctx) => ({…}))` | once, true end | synchronous; `ctx.response.usage` is final — stamp token counts/cost for the client |
 

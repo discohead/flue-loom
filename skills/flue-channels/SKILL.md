@@ -11,14 +11,14 @@ A channel is **verified inbound HTTP** from a provider: the `@flue/<provider>` p
 ## Add one with a blueprint (don't hand-roll)
 
 ```bash
-npx flue add channel slack --print          # a Markdown guide for you (the coding agent) to apply
-npx flue add                                 # list all blueprints
-npx flue add channel https://developers.example.com/webhooks --print   # unlisted provider: generic guide
+npx @flue/cli add channel slack --print          # a Markdown guide for you (the coding agent) to apply
+npx @flue/cli add                                 # list all blueprints
+npx @flue/cli add channel https://developers.example.com/webhooks --print   # unlisted provider: generic guide
 ```
 
-Blueprints are versioned implementation guides, not installers: they inspect the target and layout, install `@flue/<provider>` + the provider SDK, create `src/channels/<provider>.ts` (named `channel` and `client` exports, first line `// flue-blueprint: channel/<provider>@<n>`), mount it in `app.ts`, bind reply tools into the agent, and describe env vars and verification. `npx flue update channel <provider> --print` upgrades an existing integration (compares against the marker, preserves customizations). `/flue-loom:add` runs this flow.
+Blueprints are versioned implementation guides, not installers: they inspect the target and layout, install `@flue/<provider>` + the provider SDK, create `src/channels/<provider>.ts` (named `channel` and `client` exports, first line `// flue-blueprint: channel/<provider>@<n>`), mount it in `app.ts`, bind reply tools into the agent, and describe env vars and verification. `npx @flue/cli update channel <provider> --print` upgrades an existing integration (compares against the marker, preserves customizations). `/flue-loom:add` runs this flow.
 
-Catalog (2.1.1): slack, discord, teams, google-chat, telegram, whatsapp, messenger, twilio, github, linear, notion, intercom, zendesk, stripe, shopify, resend, salesforce-marketing-cloud.
+Catalog (2.3.0): slack, discord, teams, google-chat, telegram, whatsapp, messenger, twilio, github, linear, notion, intercom, zendesk, stripe, shopify, resend, salesforce-marketing-cloud.
 
 ## Shape of a channel module
 
@@ -69,7 +69,7 @@ app.route('/channels/slack', slack.route()); // register <public origin>/channel
 ```ts
 // the agent — trusted destination from creation data, never from the model
 export function Assistant() {
-	useModel('anthropic/claude-sonnet-5');
+	useModel('anthropic/claude-sonnet-5-5');
 	const thread = useInitialData<v.InferOutput<typeof Assistant.initialData>>();
 	useTool(replyInThread(thread));
 	return 'You participate in one Slack thread. Reply with reply_in_slack_thread when a response is called for.';

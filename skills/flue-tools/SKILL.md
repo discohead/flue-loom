@@ -51,7 +51,7 @@ export const reviewContract = defineTool({
 		await harness.sandbox.writeFile('contract.md', data.contract); // throws if the agent has no sandbox
 		const { data: report } = await harness.prompt('Review contract.md and assess risk.', {
 			result: v.object({ risk: v.picklist(['low', 'medium', 'high']), summary: v.string() }),
-			// also: tools, model, thinkingLevel, signal, images
+			// also: tools, model, thinkingLevel, signal, images, documents (PDFs, Flue ≥ 2.2)
 		});
 		return { output: report };
 	},

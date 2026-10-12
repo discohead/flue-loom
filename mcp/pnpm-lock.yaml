@@ -12,8 +12,8 @@ importers:
         specifier: ^2.1.2
         version: 2.1.2
       '@flue/sdk':
-        specifier: ^2.1.1
-        version: 2.1.1
+        specifier: ^2.3.0
+        version: 2.3.0
       '@modelcontextprotocol/client':
         specifier: ^2.1.0
         version: 2.1.0
@@ -206,8 +206,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@flue/sdk@2.1.1':
-    resolution: {integrity: sha512-pU8rhO/h3VSub63Bo5dHklP4iXKiUkSQAdO+Lj2EmHV9ZX9zt0IjBWSawd5uDYK0cLUO8FqHyuIpTRgcpMvgLg==}
+  '@flue/sdk@2.3.0':
+    resolution: {integrity: sha512-6rVUYjGu0ICogo/j5z8edsc8H7ZUJ7EEmEcJl/dVwhE6Ugjlwea+nToOjDHOm6fsWsvltOcd5wi3YUwKY6haVw==}
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -1408,7 +1408,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@flue/sdk@2.1.1':
+  '@flue/sdk@2.3.0':
     dependencies:
       '@durable-streams/client': 0.2.7
 

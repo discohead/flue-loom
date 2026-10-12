@@ -2,11 +2,11 @@
 import { fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { useInitialData, useModel } from '@flue/runtime';
 import * as v from 'valibot';
-import { fauxModel } from '../faux.ts';
+import { fauxModel, systemText } from '../faux.ts';
 
 // Greets the member named in the conversation's creation data.
 const model = fauxModel('profile', (context) => {
-	const [, name = 'guest', plan = 'free'] = context.systemPrompt?.match(/member (.+) on the (\w+) plan/) ?? [];
+	const [, name = 'guest', plan = 'free'] = systemText(context).match(/member (.+) on the (\w+) plan/) ?? [];
 	return fauxAssistantMessage(fauxText(`Hello ${name}, you are on the ${plan} plan.`));
 });
 

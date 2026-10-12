@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 — Flue 2.3
+
+Verified against Flue 2.3.0 (was 2.1.1).
+
+### Plugin
+
+- **Flue 2.3.0**: re-verified the agent scanner, the templates (type check, tests, build), the Cloudflare build and dry run, and the CLI and docs the skills cite. The skills cover what 2.2 and 2.3 added: bounded history reads (`history({ limit })`, `historyBefore()`, `?limit`/`?before`, `410 history_cursor_not_found`), server timestamps on messages and settlements, PDF attachments (`documents`), Node subpath imports for Markdown and skills, the Azure provider rename (`azure/…`), the `-`/`.` model-id fallback, the commented Workers AI binding in Cloudflare scaffolds, and the E2B blueprint v2 update. They also warn about the `useAgentFinish` regression in 2.2.0–2.2.2.
+- **Models**: recommendations follow the current Claude lineup: Sonnet 5.5 by default, Haiku 5.5 for cheap or fast steps and subagents, Opus 5.5 and Fable 5.1 for hard reasoning, each with the Flue version it needs. The Fable/Opus 5.x, Sonnet 5.5, and Haiku 5.5 models can't disable thinking, so `thinkingLevel: 'off'` runs them at the default `high` effort. The skills, the architect, and the reviewer recommend `'low'` instead.
+- **`flue-models.mjs`**: `--details` lists the thinking levels each model accepts. `--check` says when Flue would resolve an id that differs only in `-`/`.` version separators (with a warning).
+- **`flue-talk.mjs`**: `--history --limit N` reads only the newest messages, transcripts show server timestamps, and replies come from the newest messages rather than the whole conversation.
+- **`npx flue` → `npx @flue/cli`** throughout (skills, agents, lint messages): in a project without `@flue/cli` installed, a bare `npx flue` downloads an unrelated npm package named `flue`. The SessionStart docs hint uses the project's package manager (`pnpm exec flue`, `yarn flue`, `bunx @flue/cli`).
+- **Testing skill**: covers Pi 1.x faux transcripts. Instructions arrive as `system` messages (there is no `context.systemPrompt`), and the `@earendil-works/pi-ai` version must match the runtime's.
+- 55 script tests.
+
+### MCP server (`@flue-loom/mcp` 0.3.0)
+
+- `@flue/sdk` 2.3.0.
+- `flue_get_conversation` reads the newest messages and pages back only as far as `last` needs on Flue ≥ 2.2 (older runtimes still return everything). `message_count` is present only when the whole conversation was read, `settlements` cover the returned window, and messages and settlements carry server `timestamp`s.
+- `flue_send_message` reads the reply from the newest 50 messages instead of downloading the whole transcript, and falls back to a full read when the reply isn't among them.
+- The eval fixture runs on Flue 2.3.0 and Pi 1.1.
+
 ## 0.2.0 — Flue 2
 
 A rewrite for Flue 2 (verified against 2.1.1) and current Claude Code plugin conventions. Flue 2 replaced the 0.x handler API wholesale, so nothing from 0.1.0's Flue guidance carries over.

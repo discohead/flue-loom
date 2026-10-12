@@ -20,12 +20,12 @@ function Reproducer() {
 }
 
 export function Triage() {
-	useModel('anthropic/claude-sonnet-5');
+	useModel('anthropic/claude-sonnet-5-5');
 	useSubagent({
 		name: 'reproducer',
 		description: 'Sets up a reproduction for one issue and writes report.md.', // what + when
 		agent: Reproducer,
-		model: 'anthropic/claude-haiku-4-5', // optional; inherits the parent's model
+		model: 'anthropic/claude-haiku-5-5', // optional; inherits the parent's model
 		// thinkingLevel: 'low',              // optional; inherits
 	});
 	useSubagent(GeneralSubagent); // optional blank delegate named `flue-general`
@@ -35,7 +35,7 @@ export function Triage() {
 
 ## Semantics
 
-- Delegation is **model-driven**: the `task` tool is always present, but its required `agent` parameter only resolves against declared subagents (no declarations → cannot delegate). The model may pass a `cwd` and forward conversation images.
+- Delegation is **model-driven**: the `task` tool is always present, but its required `agent` parameter only resolves against declared subagents (no declarations → cannot delegate). The model may pass a `cwd` and forward conversation images and PDF documents by attachment id.
 - The **task prompt is the entire briefing** — the child sees none of the parent's conversation. Instruct the parent to write self-contained prompts.
 - Inherited: the sandbox and its tools, workspace context (`AGENTS.md`, workspace skills) from the cwd, and the parent's model/reasoning effort unless overridden. Not inherited: history, instructions, tools, skills, subagents, persistent state, initial data.
 - The delegate's function renders fresh per task. Allowed there: `useTool`, `useSkill`, `useInstruction`, nested `useSubagent`, custom hooks. Throw: `useModel`, `useSandbox`, `useMcpConnection`, `usePersistentState`, `useDataWriter`, `useDispatchMessage`, event hooks.
@@ -57,7 +57,7 @@ export const issueClassifier = defineSubagent({
 	description: 'Classifies support issues for routing.',
 	agent: IssueClassifier,
 });
-// any agent: useSubagent({ ...issueClassifier, model: 'anthropic/claude-haiku-4-5' })
+// any agent: useSubagent({ ...issueClassifier, model: 'anthropic/claude-haiku-5-5' })
 ```
 
 ## Pick the right primitive

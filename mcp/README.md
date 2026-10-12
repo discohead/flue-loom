@@ -23,7 +23,7 @@ plus `conversation_id` where a conversation is needed (`flue_send_message` gener
 | `flue_list_agents` | Registered agents (with credential status) + the local project's `app.ts` mounts |
 | `flue_send_message` | Deliver a user message or a signal (`signal_type`, `attributes`), with optional `initial_data`, `create_only`/`uid`, `idempotency_key`; waits for the reply (default 300 s) with progress notifications for tool calls and reply text; returns text, data parts, metadata, tool activity, ids — or `pending` if the agent is still working |
 | `flue_read_reply` | Re-attach to a submission (`pending` results, `wait: false` sends) and return its reply |
-| `flue_get_conversation` | Transcript: messages, signals, tool calls with inputs/outputs, data parts, submission outcomes |
+| `flue_get_conversation` | Transcript of the newest messages (`last`, default 20): signals, tool calls with inputs/outputs, data parts, submission outcomes, server timestamps. On Flue ≥ 2.2 it pages back from the newest message only as far as needed |
 | `flue_abort` | Abort running and queued work in a conversation |
 | `flue_add_agent` / `flue_remove_agent` | Manage the shared agent registry |
 

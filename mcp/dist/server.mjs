@@ -23165,7 +23165,7 @@ function toError$1(value) {
 //#endregion
 //#region src/constants.ts
 const SERVER_NAME = "flue-loom";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const CHARACTER_LIMIT = 25e3;
 const MAX_WAIT_SECONDS = 3600;
 //#endregion
@@ -24940,7 +24940,7 @@ async function streamInternal(options) {
 	});
 }
 //#endregion
-//#region node_modules/.pnpm/@flue+sdk@2.1.1/node_modules/@flue/sdk/dist/index.mjs
+//#region node_modules/.pnpm/@flue+sdk@2.3.0/node_modules/@flue/sdk/dist/index.mjs
 /** Failed SDK HTTP JSON request. */
 var FlueApiError = class extends Error {
 	/** HTTP response status. */
@@ -25106,7 +25106,8 @@ function createConversationStreamState(snapshot) {
 	return {
 		conversationId: snapshot.conversationId,
 		messages: snapshot.messages,
-		settlements: snapshot.settlements
+		settlements: snapshot.settlements,
+		...snapshot.before !== void 0 ? { before: snapshot.before } : {}
 	};
 }
 function applyConversationChunk(state, chunk) {
@@ -25122,6 +25123,7 @@ function applyConversationChunk(state, chunk) {
 				display: "visible",
 				...chunk.submissionId ? { submissionId: chunk.submissionId } : {},
 				...chunk.turnId ? { turnId: chunk.turnId } : {},
+				...chunk.timestamp ? { timestamp: chunk.timestamp } : {},
 				parts: [],
 				...chunk.metadata ? { metadata: chunk.metadata } : {}
 			}];
@@ -25306,7 +25308,8 @@ function applySettlement(state, chunk) {
 		submissionId: chunk.submissionId,
 		outcome: chunk.outcome,
 		...chunk.error === void 0 ? {} : { error: chunk.error },
-		...chunk.answeredBySubmissionId === void 0 ? {} : { answeredBySubmissionId: chunk.answeredBySubmissionId }
+		...chunk.answeredBySubmissionId === void 0 ? {} : { answeredBySubmissionId: chunk.answeredBySubmissionId },
+		...chunk.timestamp ? { timestamp: chunk.timestamp } : {}
 	};
 	const settlements = state.settlements;
 	const index = settlements.findIndex((value) => value.submissionId === settlement.submissionId);
@@ -25347,7 +25350,10 @@ function comparePosition(a, b) {
 	return a.batch !== b.batch ? a.batch - b.batch : a.index - b.index;
 }
 function createAgentConversationObservation(source, options = {}) {
+	const limit = options.limit;
+	if (limit !== void 0) assertHistoryLimit(limit, "observe()");
 	const listeners = /* @__PURE__ */ new Set();
+	let historyWindow = { kind: "newest" };
 	let streamState;
 	let snapshot = {
 		conversation: void 0,
@@ -25451,6 +25457,10 @@ function createAgentConversationObservation(source, options = {}) {
 				live: options.live,
 				signal: controller?.signal,
 				backoffOptions: options.backoffOptions,
+				...limit !== void 0 && historyWindow.kind === "from" ? { window: {
+					from: historyWindow.cursor,
+					limit
+				} } : {},
 				onActivity: armWatchdog
 			});
 		} catch (error) {
@@ -25468,12 +25478,26 @@ function createAgentConversationObservation(source, options = {}) {
 					stream = void 0;
 					nextStream.cancel();
 					disarmWatchdog();
+					historyWindow = { kind: "newest" };
 					hydrate(value);
 					return;
 				}
 				if (!streamState) throw new Error("Agent conversation updates require materialized state.");
 				if (lastApplied !== void 0 && comparePosition(chunk.position, lastApplied) <= 0) continue;
-				streamState = applyConversationChunk(streamState, chunk);
+				let nextState = applyConversationChunk(streamState, chunk);
+				if (chunk.type === "conversation-reset" && limit !== void 0) {
+					const windowed = rewindow(nextState, chunk.snapshot);
+					if (!windowed) {
+						stream = void 0;
+						nextStream.cancel();
+						disarmWatchdog();
+						historyWindow = { kind: "newest" };
+						hydrate(value);
+						return;
+					}
+					nextState = windowed;
+				}
+				streamState = nextState;
 				lastApplied = chunk.position;
 				publish({
 					conversation: streamState,
@@ -25503,10 +25527,30 @@ function createAgentConversationObservation(source, options = {}) {
 			error: void 0
 		});
 		try {
-			const history = await source.history({ signal: controller?.signal });
+			const history = await source.history({
+				signal: controller?.signal,
+				...historyWindowRequest()
+			});
 			if (!isCurrent(value)) return;
 			authFailureStreak = 0;
+			if (limit !== void 0 && historyWindow.kind === "from" && observedIncarnation !== void 0 && history.incarnation !== void 0 && history.incarnation !== observedIncarnation) {
+				historyWindow = { kind: "newest" };
+				hydrate(value);
+				return;
+			}
 			streamState = createConversationStreamState(history);
+			if (limit !== void 0) {
+				const oldest = history.messages[0];
+				historyWindow = typeof history.before === "string" && oldest ? {
+					kind: "from",
+					cursor: history.before,
+					oldestId: oldest.id
+				} : { kind: "start" };
+				streamState = {
+					...streamState,
+					before: windowBefore(historyWindow)
+				};
+			}
 			lastApplied = void 0;
 			observedIncarnation = history.incarnation;
 			publish({
@@ -25518,7 +25562,13 @@ function createAgentConversationObservation(source, options = {}) {
 			await follow(value, history.offset);
 		} catch (error) {
 			if (!isCurrent(value)) return;
+			if (limit !== void 0 && historyWindow.kind === "from" && statusOf(error) === 410) {
+				historyWindow = { kind: "newest" };
+				hydrate(value);
+				return;
+			}
 			if (statusOf(error) === 404) {
+				historyWindow = { kind: "newest" };
 				streamState = void 0;
 				reconnectAttempt = 0;
 				publish({
@@ -25532,8 +25582,32 @@ function createAgentConversationObservation(source, options = {}) {
 			scheduleRetry(value, toError(error));
 		}
 	};
+	const historyWindowRequest = () => {
+		if (limit === void 0) return {};
+		if (historyWindow.kind === "newest") return { limit };
+		if (historyWindow.kind === "from") return { from: historyWindow.cursor };
+		return {};
+	};
+	const rewindow = (state, reset) => {
+		const expected = windowBefore(historyWindow);
+		if (reset.before !== void 0) return historyWindow.kind !== "newest" && reset.before === expected ? state : void 0;
+		if (historyWindow.kind === "start") return {
+			...state,
+			before: null
+		};
+		if (historyWindow.kind !== "from") return void 0;
+		const anchor = historyWindow.oldestId;
+		const index = state.messages.findIndex((message) => message.id === anchor);
+		if (index < 0) return void 0;
+		return {
+			...state,
+			messages: state.messages.slice(index),
+			before: expected
+		};
+	};
 	const begin = () => {
 		generation++;
+		historyWindow = { kind: "newest" };
 		controller = new AbortController();
 		removeExternalAbortListener = linkSignal(options.signal, controller, () => {
 			if (!closed) {
@@ -25582,6 +25656,13 @@ function createAgentConversationObservation(source, options = {}) {
 		}
 	};
 }
+function windowBefore(window) {
+	return window.kind === "from" ? window.cursor : null;
+}
+/** Validates a bounded-read `limit`: a positive safe integer. */
+function assertHistoryLimit(limit, method) {
+	if (!Number.isSafeInteger(limit) || limit < 1) throw new Error(`The client ${method} limit must be a positive integer (got ${String(limit)}).`);
+}
 function linkSignal(signal, controller, onAbort) {
 	if (!signal) return void 0;
 	if (signal.aborted) {
@@ -25606,17 +25687,22 @@ function toError(error) {
 * `answeredBySubmissionId` names the host, whose final assistant message is
 * the coalesced reply that answered it. Settlements without that linkage
 * (recorded before it shipped) fall back to the conversation's last
-* assistant message.
+* assistant message — only when the conversation is demonstrably the whole
+* head of the transcript (it carries settlements and no older-page cursor).
+* On a bounded window the last loaded message may belong to a different
+* submission, so the reply resolves empty instead; a bounded conversation
+* only finds replies inside its window.
 *
-* Accepts anything carrying materialized `messages` and `settlements` — a
-* `history()` snapshot or an `observe()` state.
+* Accepts a `history()` snapshot or an `observe()` state. `settlements` is
+* required, which excludes `historyBefore()` pages: a page is a slice of
+* older history, never the conversation a reply is read from.
 */
 function readSubmissionReply(conversation, submissionId) {
 	const assistantMessages = conversation.messages.filter((message) => message.role === "assistant");
 	let reply = assistantMessages.filter((message) => message.submissionId === submissionId).at(-1);
 	if (!reply) {
 		const settlement = conversation.settlements?.find((entry) => entry.submissionId === submissionId);
-		reply = settlement?.answeredBySubmissionId !== void 0 ? assistantMessages.filter((message) => message.submissionId === settlement.answeredBySubmissionId).at(-1) : assistantMessages.at(-1);
+		reply = settlement?.answeredBySubmissionId !== void 0 ? assistantMessages.filter((message) => message.submissionId === settlement.answeredBySubmissionId).at(-1) : isCompleteHead(conversation) ? assistantMessages.at(-1) : void 0;
 	}
 	if (!reply) return {
 		text: "",
@@ -25636,6 +25722,15 @@ function readSubmissionReply(conversation, submissionId) {
 		data,
 		...reply.metadata !== void 0 ? { metadata: reply.metadata } : {}
 	};
+}
+/**
+* Whether a conversation is the whole transcript through its head: a snapshot
+* or observation state (settlements present — pages carry none) whose window
+* reaches the start (`before` absent on an unbounded read, `null` on a
+* bounded one that covers everything).
+*/
+function isCompleteHead(conversation) {
+	return Array.isArray(conversation.settlements) && typeof conversation.before !== "string";
 }
 /**
 * Creates a {@link FlueEventStream} that yields individual values from a
@@ -26143,17 +26238,48 @@ function createFlueClient(options) {
 			path: "/abort",
 			signal: opts.signal
 		}),
-		history: async (opts = {}) => rewriteSnapshotAttachmentUrls(await http.json({
-			query: { view: "history" },
-			signal: opts.signal
-		}), http),
+		history: async (opts = {}) => {
+			if (opts.limit !== void 0) assertHistoryLimit(opts.limit, "history()");
+			return rewriteSnapshotAttachmentUrls(await http.json({
+				query: {
+					view: "history",
+					limit: opts.limit
+				},
+				signal: opts.signal
+			}), http);
+		},
+		historyBefore: async (cursor, opts) => {
+			if (typeof cursor !== "string" || cursor === "") throw new Error("The client historyBefore() requires a non-empty cursor.");
+			assertHistoryLimit(opts?.limit, "historyBefore()");
+			const page = await http.json({
+				query: {
+					view: "history",
+					before: cursor,
+					limit: opts.limit
+				},
+				signal: opts.signal
+			});
+			if ("offset" in page || !("before" in page)) throw new Error("The client historyBefore() requires a Flue runtime that supports bounded history reads.");
+			return {
+				...page,
+				messages: page.messages.map((message) => withAttachmentUrls(message, http))
+			};
+		},
 		observe: (opts = {}) => createAgentConversationObservation({
-			history: async (historyOptions) => rewriteSnapshotAttachmentUrls(await http.json({
-				query: { view: "history" },
-				signal: historyOptions.signal
+			history: async ({ signal, limit, from }) => rewriteSnapshotAttachmentUrls(await http.json({
+				query: {
+					view: "history",
+					limit,
+					from
+				},
+				signal
 			}), http),
-			updates: ({ onActivity, ...updateOptions }) => createFlueEventStream(updateOptions, {
-				url: http.url("", { view: "updates" }),
+			updates: ({ onActivity, window, ...updateOptions }) => createFlueEventStream(updateOptions, {
+				url: http.url("", {
+					view: "updates",
+					from: window?.from,
+					limit: window?.limit
+				}),
 				fetch: http.fetchWithHeaders.bind(http),
 				onActivity
 			}, (chunk) => rewriteChunkAttachmentUrls(assertConversationStreamChunk(chunk), http))
@@ -26487,26 +26613,41 @@ var ActivityTracker = class {
 * caller cancellation, execution failures, and HTTP errors.
 */
 async function waitForReply(client, target, options) {
-	const tracker = new ActivityTracker(typeof target === "string" ? target : target.submissionId);
+	const submissionId = typeof target === "string" ? target : target.submissionId;
+	const tracker = new ActivityTracker(submissionId);
 	const timeout = new AbortController();
 	const timer = setTimeout(() => timeout.abort(/* @__PURE__ */ new Error("wait timed out")), options.timeoutMs);
 	const signal = AbortSignal.any([options.signal, timeout.signal]);
 	let lastTextProgress = 0;
+	const onEvent = async (chunk) => {
+		const line = tracker.observe(chunk);
+		if (!options.progress) return;
+		if (line) await options.progress(line);
+		else if (chunk.type === "message-delta" && chunk.kind === "text" && Date.now() - lastTextProgress >= 250) {
+			lastTextProgress = Date.now();
+			await options.progress(`writing reply (${tracker.textChars} chars)`);
+		}
+	};
 	try {
-		return {
+		if (typeof target === "string") return {
 			kind: "settled",
 			reply: await client.read(target, {
 				signal,
-				onEvent: async (chunk) => {
-					const line = tracker.observe(chunk);
-					if (!options.progress) return;
-					if (line) await options.progress(line);
-					else if (chunk.type === "message-delta" && chunk.kind === "text" && Date.now() - lastTextProgress >= 250) {
-						lastTextProgress = Date.now();
-						await options.progress(`writing reply (${tracker.textChars} chars)`);
-					}
-				}
+				onEvent
 			}),
+			tracker
+		};
+		await client.wait(target, {
+			signal,
+			onEvent
+		});
+		return {
+			kind: "settled",
+			reply: {
+				...await readReply(client, submissionId, signal),
+				submissionId,
+				...target.uid !== void 0 ? { uid: target.uid } : {}
+			},
 			tracker
 		};
 	} catch (err) {
@@ -26517,6 +26658,59 @@ async function waitForReply(client, target, options) {
 		throw err;
 	} finally {
 		clearTimeout(timer);
+	}
+}
+/**
+* A settled submission's reply, read from the newest messages. Falls back to
+* the whole conversation when the reply isn't in that window — or for a
+* legacy settlement, whose reply readSubmissionReply() only guesses from a
+* complete transcript.
+*/
+async function readReply(client, submissionId, signal) {
+	const window = await client.history({
+		limit: 50,
+		signal
+	});
+	if (typeof window.before !== "string" || holdsReply(window, submissionId)) return readSubmissionReply(window, submissionId);
+	return readSubmissionReply(await client.history({ signal }), submissionId);
+}
+function holdsReply(snapshot, submissionId) {
+	const answeredBy = snapshot.settlements.find((settlement) => settlement.submissionId === submissionId)?.answeredBySubmissionId;
+	return snapshot.messages.some((message) => message.role === "assistant" && (message.submissionId === submissionId || answeredBy !== void 0 && message.submissionId === answeredBy));
+}
+/**
+* The newest `count` messages passing `keep`, paging back through bounded
+* history reads only as far as needed. A runtime that predates bounded reads
+* returns the whole conversation at once. A cursor invalidated by a stream
+* reset (410 history_cursor_not_found) restarts the read once.
+*/
+async function readRecentMessages(client, count, keep, signal) {
+	for (let attempt = 0;; attempt += 1) try {
+		const snapshot = await client.history({
+			limit: count,
+			signal
+		});
+		let read = snapshot.messages;
+		let cursor = snapshot.before;
+		while (typeof cursor === "string" && read.filter(keep).length < count) {
+			const page = await client.historyBefore(cursor, {
+				limit: Math.max(count, 100),
+				signal
+			});
+			read = [...page.messages, ...read];
+			cursor = page.before;
+		}
+		const kept = read.filter(keep);
+		const messages = kept.slice(-count);
+		const [oldest] = messages;
+		return {
+			snapshot,
+			messages,
+			window: oldest ? read.slice(read.indexOf(oldest)) : [],
+			...typeof cursor !== "string" ? { total: kept.length } : {}
+		};
+	} catch (err) {
+		if (attempt > 0 || !(err instanceof FlueApiError && err.status === 410)) throw err;
 	}
 }
 /** Sends an MCP progress notification when the caller asked for them. */
@@ -26589,6 +26783,7 @@ function describeError(err, target) {
 			submission_conflict: `That idempotency_key was already used for a different message${typeof meta?.submissionId === "string" ? ` (submission ${meta.submissionId})` : ""}. Use a fresh key to send again.`,
 			method_not_allowed: "The route exists but does not accept this method.",
 			runtime_unavailable: "The runtime is temporarily unavailable (a dev server reload?). Retry in a moment.",
+			history_cursor_not_found: "The conversation's stream was reset while its history was being read. Retry.",
 			internal_error: `The server hit an internal error${err.ref ? ` — quote ref ${err.ref} when reporting it` : ""}.`
 		};
 		const hint = type ? hints[type] : void 0;
@@ -26714,7 +26909,8 @@ function projectMessage(message) {
 			attributes: message.signal.attributes
 		} } : {},
 		...message.settlement ? { settlement: message.settlement.outcome } : {},
-		...message.metadata ? { metadata: preview(message.metadata) } : {}
+		...message.metadata ? { metadata: preview(message.metadata) } : {},
+		...message.timestamp ? { timestamp: message.timestamp } : {}
 	};
 }
 function projectSettlement(settlement) {
@@ -26722,18 +26918,24 @@ function projectSettlement(settlement) {
 		submission_id: settlement.submissionId,
 		outcome: settlement.outcome,
 		...settlement.answeredBySubmissionId ? { answered_by_submission_id: settlement.answeredBySubmissionId } : {},
-		...settlement.error !== void 0 ? { error: preview(settlement.error) } : {}
+		...settlement.error !== void 0 ? { error: preview(settlement.error) } : {},
+		...settlement.timestamp ? { timestamp: settlement.timestamp } : {}
 	};
 }
-function historyMarkdown(label, conversationUrl, snapshot, messages, total) {
-	if (!snapshot) return `**${label}** · no conversation exists at ${conversationUrl} yet — flue_send_message creates it.`;
-	const lines = [`**${label}** · ${conversationUrl} — ${total} message(s)${messages.length < total ? `, showing the last ${messages.length}` : ""}, ${snapshot.settlements.length} settled submission(s)`, ""];
+/**
+* `total` is the conversation's message count, known when all of it was read;
+* `settlements` cover the returned window (every one, after a full read).
+*/
+function historyMarkdown(label, conversationUrl, exists, messages, total, settlements) {
+	if (!exists) return `**${label}** · no conversation exists at ${conversationUrl} yet — flue_send_message creates it.`;
+	const lines = [`**${label}** · ${conversationUrl} — ${total === void 0 ? `the last ${messages.length} message(s) — earlier ones not read (raise \`last\` for more)` : `${total} message(s)${messages.length < total ? `, showing the last ${messages.length}` : ""}`}, ${settlements.length} settled submission(s)`, ""];
 	for (const message of messages) {
 		const tags = [message.role];
 		if (message.purpose !== message.role) tags.push(message.purpose);
 		if (message.signal?.tag_name) tags.push(`signal ${message.signal.tag_name}`);
 		if (message.submission_id) tags.push(message.submission_id);
 		if (message.settlement) tags.push(message.settlement);
+		if (message.timestamp) tags.push(message.timestamp.replace(/\.\d+Z$/, "Z"));
 		lines.push(`[${tags.join(" · ")}] ${message.text.trim() || (message.tool_calls ? "" : "_(no text)_")}`.trimEnd());
 		for (const call of message.tool_calls ?? []) {
 			const state = call.state === "output-available" ? "✓" : call.state === "output-error" ? `✗ ${call.error ?? ""}` : "…";
@@ -26742,7 +26944,7 @@ function historyMarkdown(label, conversationUrl, snapshot, messages, total) {
 		for (const [name, values] of Object.entries(message.data ?? {})) lines.push(`    data ${name} ×${values.length}`);
 		for (const file of message.files ?? []) lines.push(`    file ${file.filename ?? file.media_type}`);
 	}
-	const failed = snapshot.settlements.filter((settlement) => settlement.outcome !== "completed");
+	const failed = settlements.filter((settlement) => settlement.outcome !== "completed");
 	if (failed.length > 0) lines.push("", `Unsuccessful submissions: ${failed.map((settlement) => `${settlement.submissionId} ${settlement.outcome}`).join(", ")}`);
 	return lines.join("\n");
 }
@@ -27155,7 +27357,7 @@ Args:
 	});
 	server.registerTool("flue_get_conversation", {
 		title: "Get a Flue conversation",
-		description: `Read a conversation's transcript: user and assistant messages, signals, tool calls with inputs/outputs (large values previewed), data parts, and each submission's outcome. Use it to review what an agent did, debug a failed turn, or pick up a conversation someone else started. A conversation that doesn't exist yet returns exists: false.
+		description: `Read a conversation's transcript: user and assistant messages, signals, tool calls with inputs/outputs (large values previewed), data parts, each submission's outcome, and server timestamps. Use it to review what an agent did, debug a failed turn, or pick up a conversation someone else started. Long conversations are read from the newest message back, only as far as needed: message_count (the conversation's total) is present only when all of it was read, and truncated: true means earlier messages were not returned. A conversation that doesn't exist yet returns exists: false.
 
 Args:
   - agent | url | conversation_url, plus conversation_id: the conversation.
@@ -27173,7 +27375,7 @@ Args:
 			conversation_url: string(),
 			conversation_id: string(),
 			exists: boolean(),
-			message_count: number$1(),
+			message_count: number$1().optional(),
 			messages: array(record(string(), unknown())),
 			settlements: array(record(string(), unknown())),
 			truncated: boolean().optional()
@@ -27188,25 +27390,27 @@ Args:
 		let target;
 		try {
 			target = await resolveTarget(args, { requireConversation: true });
-			let snapshot;
+			let recent;
 			try {
-				snapshot = await clientFor(target).history({ signal: ctx.mcpReq.signal });
+				const keep = (message) => args.include_hidden === true || message.display === "visible";
+				recent = await readRecentMessages(clientFor(target), args.last ?? 20, keep, ctx.mcpReq.signal);
 			} catch (err) {
 				if (!(err instanceof FlueApiError && err.status === 404 && hasEnvelopeType(err.body, "stream_not_found"))) throw err;
 			}
-			const visible = (snapshot?.messages ?? []).filter((message) => args.include_hidden || message.display === "visible");
-			const limit = args.last ?? 20;
-			const messages = visible.slice(-limit).map(projectMessage);
+			const messages = (recent?.messages ?? []).map(projectMessage);
+			const windowSubmissions = new Set(recent?.window.map((message) => message.submissionId));
+			const settlements = (recent?.snapshot.settlements ?? []).filter((settlement) => recent?.total !== void 0 || windowSubmissions.has(settlement.submissionId));
+			const total = recent ? recent.total : 0;
 			return ok({
 				agent: target.label,
 				conversation_url: target.conversationUrl,
 				conversation_id: target.conversationId,
-				exists: snapshot !== void 0,
-				message_count: visible.length,
+				exists: recent !== void 0,
+				...total !== void 0 ? { message_count: total } : {},
 				messages,
-				settlements: (snapshot?.settlements ?? []).map(projectSettlement),
-				...messages.length < visible.length ? { truncated: true } : {}
-			}, historyMarkdown(target.label, target.conversationUrl, snapshot, messages, visible.length), args.response_format);
+				settlements: settlements.map(projectSettlement),
+				...total === void 0 || total > messages.length ? { truncated: true } : {}
+			}, historyMarkdown(target.label, target.conversationUrl, recent !== void 0, messages, total, settlements), args.response_format);
 		} catch (err) {
 			return fail(err, target);
 		}

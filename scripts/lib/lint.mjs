@@ -177,7 +177,7 @@ async function lintModule(root, filePath) {
 
 function legacyFindings(code) {
 	return LEGACY_MARKERS.filter(({ pattern }) => pattern.test(code)).map(({ message }) =>
-		warn(`Pre-2.0 API: ${message}. See the flue-migration skill or \`npx flue docs read guide/migration\`.`),
+		warn(`Pre-2.0 API: ${message}. See the flue-migration skill or \`npx @flue/cli docs read guide/migration\`.`),
 	);
 }
 

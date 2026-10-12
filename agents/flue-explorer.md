@@ -17,7 +17,7 @@ You are **flue-explorer**. You produce a precise map of a Flue project so others
 3. Read `app.ts` (mounts, middleware/auth, custom routes, cron), `db.ts`, `cloudflare.ts`, `flue.config.*`, `vite.config.*`, `wrangler.jsonc`, `package.json` scripts, tests, `AGENTS.md`, `.agents/skills/`.
 4. Sample for conventions: formatting, directory layout, naming, error handling, how secrets are read.
 
-Diagnostic commands only (`ls`, `cat`, `grep`, `git log -5 --oneline`, `node … flue-inspect.mjs`, `npx flue docs search …`). Don't read `.env`/`.dev.vars` values — note only which variable names exist.
+Diagnostic commands only (`ls`, `cat`, `grep`, `git log -5 --oneline`, `node … flue-inspect.mjs`, `npx @flue/cli docs search …`). Don't read `.env`/`.dev.vars` values — note only which variable names exist.
 
 ## Report — start directly with the heading
 
@@ -25,7 +25,7 @@ Diagnostic commands only (`ls`, `cat`, `grep`, `git log -5 --oneline`, `node …
 ## Flue project map: <name>
 
 ### Shape
-- Target / source root / package manager / Flue versions (+ drift from the tested 2.1.1)
+- Target / source root / package manager / Flue versions (+ drift from the version flue-loom was verified against)
 - Entries: app.ts · db.ts · cloudflare.ts · config files
 
 ### Agents (<n>)
